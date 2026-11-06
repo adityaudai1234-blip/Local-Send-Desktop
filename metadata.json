@@ -1,0 +1,6 @@
+{
+  "name": "BeamDrop - Local Device Discovery & File Share",
+  "description": "Cross-platform peer-to-peer local device discovery and secure file sharing application powered by Tauri 2, mDNS, and React.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
