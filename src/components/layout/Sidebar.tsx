@@ -9,10 +9,12 @@ import {
   Moon,
   Share2,
   Cpu,
+  ShieldCheck,
   Wifi,
 } from 'lucide-react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useDeviceStore } from '../../stores/deviceStore';
+import { usePairingStore } from '../../stores/pairingStore';
 import { isTauriEnvironment } from '../../services/tauriBridge';
 
 interface SidebarProps {
@@ -22,12 +24,14 @@ interface SidebarProps {
 
 export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => {
   const { theme, toggleTheme } = useSettingsStore();
-  const { discoveryState, localDevice } = useDeviceStore();
+  const { discoveryState } = useDeviceStore();
+  const { trustedDevices } = usePairingStore();
   const isNative = isTauriEnvironment();
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'devices', label: 'Nearby Devices', icon: Radio, count: discoveryState.deviceCount },
+    { id: 'trusted', label: 'Trusted Devices', icon: ShieldCheck, count: trustedDevices.length },
     { id: 'transfers', label: 'Transfers', icon: ArrowLeftRight },
     { id: 'history', label: 'History', icon: Clock },
     { id: 'settings', label: 'Settings', icon: Settings },

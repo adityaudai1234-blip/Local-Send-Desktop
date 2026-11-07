@@ -5,21 +5,35 @@ import { QuickActions } from '../components/dashboard/QuickActions';
 import { TransferOverview } from '../components/dashboard/TransferOverview';
 import { DiscoveredDevice } from '../types/device';
 import { ManualAddModal } from '../components/devices/ManualAddModal';
+import { PairingModal } from '../components/pairing/PairingModal';
+import { QrScannerModal } from '../components/pairing/QrScannerModal';
 import { Modal } from '../components/common/Modal';
 import { useTransferStore } from '../stores/transferStore';
-import { Send, FileText, Check } from 'lucide-react';
+import { usePairingStore } from '../stores/pairingStore';
+import { Send, FileText, Check, QrCode, Camera, ShieldCheck, ArrowRight, BellRing } from 'lucide-react';
+import { formatDateTime } from '../utils/formatters';
 
 interface DashboardProps {
   onNavigateToTransfers: () => void;
+  onNavigateToTrusted: () => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToTransfers }) => {
+export const Dashboard: React.FC<DashboardProps> = ({
+  onNavigateToTransfers,
+  onNavigateToTrusted,
+}) => {
   const [isManualAddOpen, setIsManualAddOpen] = useState(false);
+  const [isPairModalOpen, setIsPairModalOpen] = useState(false);
+  const [isScanModalOpen, setIsScanModalOpen] = useState(false);
   const [selectedDeviceForSend, setSelectedDeviceForSend] = useState<DiscoveredDevice | null>(null);
   const [simulatedFileName, setSimulatedFileName] = useState('project_archive_2026.zip');
   const [simulatedSizeMb, setSimulatedSizeMb] = useState('85');
   const [sendSuccess, setSendSuccess] = useState(false);
+
   const { addTransfer } = useTransferStore();
+  const { pendingRequests, trustedDevices, acceptRequest, rejectRequest } = usePairingStore();
+
+  const activeRequest = pendingRequests[0] || null;
 
   const handleSendSubmit = (e: React.FormEvent) => {
     e.preventDefault();
@@ -46,9 +60,118 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToTransfers }) =
 
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-8">
+      {/* Pending Pairing Request Alert Banner */}
+      {activeRequest && (
+        <div className="p-4 rounded-xl border border-cyan-500/40 bg-cyan-500/10 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 animate-in fade-in">
+          <div className="flex items-center gap-3">
+            <div className="w-10 h-10 rounded-lg bg-cyan-500/20 text-cyan-600 dark:text-cyan-400 flex items-center justify-center shrink-0">
+              <BellRing className="w-5 h-5 animate-bounce" />
+            </div>
+            <div>
+              <h4 className="text-sm font-semibold text-neutral-900 dark:text-white">
+                Pairing Request from {activeRequest.fromDeviceName}
+              </h4>
+              <p className="text-xs text-neutral-600 dark:text-neutral-400">
+                Visual code: <span className="font-mono font-bold">{activeRequest.verificationCode}</span> · IP: {activeRequest.fromIpAddress}
+              </p>
+            </div>
+          </div>
+
+          <div className="flex items-center gap-2 shrink-0">
+            <button
+              onClick={() => rejectRequest(activeRequest.requestId)}
+              className="px-3 py-1.5 text-xs font-medium text-rose-600 dark:text-rose-400 hover:bg-rose-50 dark:hover:bg-rose-950/40 rounded-lg transition-colors"
+            >
+              Reject
+            </button>
+            <button
+              onClick={() => acceptRequest(activeRequest.requestId)}
+              className="px-4 py-1.5 text-xs font-medium rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 transition-colors shadow-xs"
+            >
+              Accept & Trust
+            </button>
+          </div>
+        </div>
+      )}
+
       {/* Top Section: Your Device */}
       <section>
         <YourDeviceCard />
+      </section>
+
+      {/* Pairing & Trusted Devices Overview Strip */}
+      <section className="grid grid-cols-1 md:grid-cols-3 gap-4">
+        {/* Quick Pair CTA Card */}
+        <div className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 flex flex-col justify-between">
+          <div>
+            <div className="flex items-center justify-between mb-2">
+              <span className="text-xs font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+                <QrCode className="w-4 h-4 text-cyan-500" />
+                QR Code Pairing
+              </span>
+              <span className="text-[11px] font-mono text-neutral-400">Ed25519</span>
+            </div>
+            <p className="text-xs text-neutral-500">
+              Generate a temporary QR code or scan a nearby device using your camera.
+            </p>
+          </div>
+
+          <div className="flex items-center gap-2 mt-4 pt-3 border-t border-neutral-100 dark:border-neutral-800">
+            <button
+              onClick={() => setIsPairModalOpen(true)}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 transition-colors"
+            >
+              <QrCode className="w-3.5 h-3.5" />
+              <span>Show QR</span>
+            </button>
+
+            <button
+              onClick={() => setIsScanModalOpen(true)}
+              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded-lg border border-neutral-300 dark:border-neutral-700 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+            >
+              <Camera className="w-3.5 h-3.5" />
+              <span>Scan QR</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Paired Devices Summary Card */}
+        <div className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 flex flex-col justify-between md:col-span-2">
+          <div className="flex items-start justify-between">
+            <div>
+              <div className="flex items-center gap-2 mb-1">
+                <ShieldCheck className="w-4 h-4 text-emerald-500" />
+                <span className="text-xs font-semibold text-neutral-900 dark:text-white">
+                  Trusted Peer Vault
+                </span>
+              </div>
+              <p className="text-xs text-neutral-500">
+                You have <span className="font-bold text-neutral-900 dark:text-white font-mono">{trustedDevices.length}</span> securely paired device{trustedDevices.length === 1 ? '' : 's'} stored in your local SQLite database.
+              </p>
+            </div>
+
+            <button
+              onClick={onNavigateToTrusted}
+              className="flex items-center gap-1 text-xs font-medium text-neutral-700 dark:text-neutral-300 hover:text-neutral-900 dark:hover:text-white transition-colors"
+            >
+              <span>Manage</span>
+              <ArrowRight className="w-3.5 h-3.5" />
+            </button>
+          </div>
+
+          <div className="mt-4 pt-3 border-t border-neutral-100 dark:border-neutral-800 flex flex-wrap items-center gap-4 text-xs">
+            {trustedDevices.slice(0, 3).map((dev) => (
+              <div key={dev.deviceId} className="flex items-center gap-2 text-neutral-600 dark:text-neutral-400">
+                <span className="w-2 h-2 rounded-full bg-emerald-500" />
+                <span className="font-medium text-neutral-900 dark:text-white">{dev.name}</span>
+                <span className="font-mono text-[11px] text-neutral-400">({dev.fingerprint})</span>
+              </div>
+            ))}
+            {trustedDevices.length === 0 && (
+              <span className="text-neutral-400 text-xs">No devices paired yet. Click &ldquo;Show QR&rdquo; to begin.</span>
+            )}
+          </div>
+        </div>
       </section>
 
       {/* Middle Grid: Nearby Devices (Dominant Anchor) */}
@@ -62,10 +185,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToTransfers }) =
       {/* Quick Actions */}
       <section>
         <QuickActions
-          onSelectSend={() => {
-            // Trigger selection of first device or prompt
-            setIsManualAddOpen(true);
-          }}
+          onSelectSend={() => setIsManualAddOpen(true)}
         />
       </section>
 
@@ -78,6 +198,16 @@ export const Dashboard: React.FC<DashboardProps> = ({ onNavigateToTransfers }) =
       <ManualAddModal
         isOpen={isManualAddOpen}
         onClose={() => setIsManualAddOpen(false)}
+      />
+
+      <PairingModal
+        isOpen={isPairModalOpen}
+        onClose={() => setIsPairModalOpen(false)}
+      />
+
+      <QrScannerModal
+        isOpen={isScanModalOpen}
+        onClose={() => setIsScanModalOpen(false)}
       />
 
       {/* Send Files Dialog */}

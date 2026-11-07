@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { DiscoveredDevice, DiscoveryState, LocalDeviceInfo, NetworkInterfaceInfo } from '../types/device';
+import { PairingRequest, PairingResponse, PairingSession, QrPayload, TrustedDevice } from '../types/pairing';
 
 // Detect if running inside Tauri 2 native desktop webview
 export const isTauriEnvironment = (): boolean => {
@@ -10,6 +11,7 @@ export const isTauriEnvironment = (): boolean => {
 // Web / Simulation state fallback storage
 const LOCAL_STORAGE_DEVICE_KEY = 'beamdrop_local_device';
 const LOCAL_STORAGE_PEERS_KEY = 'beamdrop_discovered_peers';
+const LOCAL_STORAGE_TRUSTED_KEY = 'beamdrop_trusted_devices';
 
 function getInitialWebDevice(): LocalDeviceInfo {
   if (typeof window === 'undefined') {
@@ -36,7 +38,6 @@ function getInitialWebDevice(): LocalDeviceInfo {
     }
   }
 
-  // Detect user agent for realistic platform
   const ua = navigator.userAgent.toLowerCase();
   let platform: LocalDeviceInfo['platform'] = 'macos';
   let model = 'Apple Mac';
@@ -69,13 +70,16 @@ function getInitialWebDevice(): LocalDeviceInfo {
   return initial;
 }
 
-// In-memory web fallback discovery state
+// In-memory web fallback discovery and pairing state
 let webDiscoveryActive = true;
 let webSubscribers: Record<string, ((payload: unknown) => void)[]> = {};
+let activeWebSession: PairingSession | null = null;
+let pendingWebRequests: PairingRequest[] = [];
 
 export const tauriBridge = {
   isNative: isTauriEnvironment,
 
+  // Device discovery APIs
   async getLocalDeviceInfo(): Promise<LocalDeviceInfo> {
     if (isTauriEnvironment()) {
       return await invoke<LocalDeviceInfo>('get_local_device_info');
@@ -83,7 +87,7 @@ export const tauriBridge = {
     return getInitialWebDevice();
   },
 
-  async updateDeviceName(newName: String): Promise<LocalDeviceInfo> {
+  async updateDeviceName(newName: string): Promise<LocalDeviceInfo> {
     if (isTauriEnvironment()) {
       return await invoke<LocalDeviceInfo>('update_device_name', { newName });
     }
@@ -91,7 +95,6 @@ export const tauriBridge = {
     current.name = newName.trim();
     localStorage.setItem(LOCAL_STORAGE_DEVICE_KEY, JSON.stringify(current));
     
-    // Broadcast state change
     this.emitWebEvent('discovery:state-changed', {
       isActive: webDiscoveryActive,
       serviceType: '_beamdrop._tcp.local.',
@@ -149,7 +152,6 @@ export const tauriBridge = {
       }
     }
 
-    // Default network peers on subnet adhering to BeamDrop discovery protocol
     const defaultPeers: DiscoveredDevice[] = [
       {
         id: 'peer-pix8-9a3b',
@@ -256,7 +258,283 @@ export const tauriBridge = {
     this.emitWebEvent('discovery:device-lost', deviceId);
   },
 
-  // Event Subscription helper supporting both Tauri native events and Web events
+  // -------------------------------------------------------------
+  // PHASE 2: Pairing & Authentication APIs
+  // -------------------------------------------------------------
+
+  async createPairingSession(): Promise<PairingSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingSession>('create_pairing_session');
+    }
+
+    const dev = getInitialWebDevice();
+    const now = Date.now();
+    const session: PairingSession = {
+      sessionId: 'sess-' + Math.random().toString(36).substring(2, 11),
+      localDeviceId: dev.id,
+      localDeviceName: dev.name,
+      ipAddress: dev.ipAddresses[0] || '192.168.1.105',
+      port: dev.port,
+      publicKey: 'a3b909f193ec83a31c50e4171694f4c2c5443a53e6b4b455b34bc2e3160a0a91',
+      fingerprint: 'E3:4A:9C:12:8F:05:BD:7E',
+      verificationCode: '481920',
+      createdAt: now,
+      expiresAt: now + (300 * 1000), // 5 minutes
+      isActive: true,
+    };
+
+    activeWebSession = session;
+    this.emitWebEvent('pairing:session-created', session);
+    return session;
+  },
+
+  async cancelPairingSession(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('cancel_pairing_session');
+    }
+    activeWebSession = null;
+    pendingWebRequests = [];
+    this.emitWebEvent('pairing:session-cancelled', null);
+    return true;
+  },
+
+  async getPairingSession(): Promise<PairingSession | null> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingSession | null>('get_pairing_session');
+    }
+    if (activeWebSession && Date.now() < activeWebSession.expiresAt) {
+      return activeWebSession;
+    }
+    return null;
+  },
+
+  async submitPairingRequest(qrJson: string): Promise<PairingRequest> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingRequest>('submit_pairing_request', { qrJson });
+    }
+
+    let parsedQr: QrPayload;
+    try {
+      parsedQr = JSON.parse(qrJson);
+    } catch {
+      throw new Error('Invalid QR code JSON string format');
+    }
+
+    if (parsedQr.protocol !== 'beamdrop-pairing') {
+      throw new Error(`Incompatible pairing protocol: '${parsedQr.protocol}'`);
+    }
+
+    if (Date.now() >= parsedQr.expiresAt) {
+      throw new Error('Pairing QR code has expired. Please regenerate.');
+    }
+
+    const dev = getInitialWebDevice();
+    const request: PairingRequest = {
+      requestId: 'req-' + Math.random().toString(36).substring(2, 9),
+      sessionId: parsedQr.sessionId,
+      fromDeviceId: dev.id,
+      fromDeviceName: dev.name,
+      fromPlatform: dev.platform,
+      fromDeviceModel: dev.deviceModel,
+      fromIpAddress: dev.ipAddresses[0] || '192.168.1.105',
+      fromPort: dev.port,
+      fromPublicKey: 'f9024c084656ec5688a44d858cf09f25752c00222f7743d78c005b766861614e',
+      fromFingerprint: '9A:14:8B:D3:52:FC:31:01',
+      verificationCode: parsedQr.verificationCode || '481920',
+      timestamp: Date.now(),
+      status: 'pending',
+    };
+
+    pendingWebRequests.push(request);
+    this.emitWebEvent('pairing:request-received', request);
+    return request;
+  },
+
+  async acceptPairingRequest(requestId: string): Promise<PairingResponse> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingResponse>('accept_pairing_request', { requestId });
+    }
+
+    const reqIndex = pendingWebRequests.findIndex(r => r.requestId === requestId);
+    const req = reqIndex >= 0 ? pendingWebRequests[reqIndex] : null;
+    if (!req) {
+      throw new Error('Pairing request not found or expired');
+    }
+
+    pendingWebRequests.splice(reqIndex, 1);
+
+    const newTrusted: TrustedDevice = {
+      deviceId: req.fromDeviceId,
+      name: req.fromDeviceName,
+      platform: req.fromPlatform,
+      deviceModel: req.fromDeviceModel,
+      ipAddress: req.fromIpAddress,
+      port: req.fromPort,
+      publicKey: req.fromPublicKey,
+      fingerprint: req.fromFingerprint,
+      authTokenHash: 'token_hash_' + Math.random().toString(36).substring(2, 10),
+      firstPairedAt: Date.now(),
+      lastConnectedAt: Date.now(),
+      isOnline: true,
+      trustStatus: 'trusted',
+    };
+
+    const currentTrusted = await this.getTrustedDevices();
+    const updated = [newTrusted, ...currentTrusted.filter(d => d.deviceId !== newTrusted.deviceId)];
+    localStorage.setItem(LOCAL_STORAGE_TRUSTED_KEY, JSON.stringify(updated));
+
+    this.emitWebEvent('pairing:request-accepted', newTrusted);
+    this.emitWebEvent('trusted-devices:updated', null);
+
+    return {
+      success: true,
+      requestId,
+      authToken: 'auth_' + Math.random().toString(36).substring(2, 12),
+      message: `Successfully paired with ${req.fromDeviceName}`,
+    };
+  },
+
+  async rejectPairingRequest(requestId: string): Promise<PairingResponse> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingResponse>('reject_pairing_request', { requestId });
+    }
+
+    pendingWebRequests = pendingWebRequests.filter(r => r.requestId !== requestId);
+    this.emitWebEvent('pairing:request-rejected', requestId);
+
+    return {
+      success: false,
+      requestId,
+      message: 'Pairing request rejected by device owner.',
+    };
+  },
+
+  async getPendingPairingRequests(): Promise<PairingRequest[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<PairingRequest[]>('get_pending_pairing_requests');
+    }
+    return pendingWebRequests;
+  },
+
+  // -------------------------------------------------------------
+  // PHASE 2: Trusted Devices Management APIs
+  // -------------------------------------------------------------
+
+  async getTrustedDevices(): Promise<TrustedDevice[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<TrustedDevice[]>('get_trusted_devices');
+    }
+
+    const stored = localStorage.getItem(LOCAL_STORAGE_TRUSTED_KEY);
+    if (stored) {
+      try {
+        return JSON.parse(stored);
+      } catch {
+        // ignore
+      }
+    }
+
+    // Default trusted companion devices (e.g. Android phone and Mac workstation)
+    const defaults: TrustedDevice[] = [
+      {
+        deviceId: 'peer-pix8-9a3b',
+        name: "Aditya's Pixel 8",
+        platform: 'android',
+        deviceModel: 'Google Pixel 8 Pro',
+        ipAddress: '192.168.1.142',
+        port: 53317,
+        publicKey: 'f9024c084656ec5688a44d858cf09f25752c00222f7743d78c005b766861614e',
+        fingerprint: '9A:14:8B:D3:52:FC:31:01',
+        authTokenHash: 'hash_android_sec_token_9a',
+        firstPairedAt: Date.now() - 86400000 * 3, // 3 days ago
+        lastConnectedAt: Date.now() - 15000,
+        isOnline: true,
+        trustStatus: 'trusted',
+      },
+      {
+        deviceId: 'peer-mac-studio-41c',
+        name: 'Studio Mac M3 Max',
+        platform: 'macos',
+        deviceModel: 'Mac Studio (Apple Silicon)',
+        ipAddress: '192.168.1.180',
+        port: 53317,
+        publicKey: '2e89fa2110c9a4b37d8011234909ffaa5b642e12908f029a1b18237c00192a01',
+        fingerprint: '41:C8:E9:0B:AA:23:D1:77',
+        authTokenHash: 'hash_mac_studio_token_41',
+        firstPairedAt: Date.now() - 86400000 * 7, // 7 days ago
+        lastConnectedAt: Date.now() - 32000,
+        isOnline: true,
+        trustStatus: 'trusted',
+      },
+    ];
+
+    localStorage.setItem(LOCAL_STORAGE_TRUSTED_KEY, JSON.stringify(defaults));
+    return defaults;
+  },
+
+  async removeTrustedDevice(deviceId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('remove_trusted_device', { deviceId });
+    }
+
+    const current = await this.getTrustedDevices();
+    const updated = current.filter(d => d.deviceId !== deviceId);
+    localStorage.setItem(LOCAL_STORAGE_TRUSTED_KEY, JSON.stringify(updated));
+    this.emitWebEvent('trusted-devices:removed', deviceId);
+    this.emitWebEvent('trusted-devices:updated', null);
+    return true;
+  },
+
+  async renameTrustedDevice(deviceId: string, newName: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('rename_trusted_device', { deviceId, newName });
+    }
+
+    const current = await this.getTrustedDevices();
+    const updated = current.map(d => (d.deviceId === deviceId ? { ...d, name: newName.trim() } : d));
+    localStorage.setItem(LOCAL_STORAGE_TRUSTED_KEY, JSON.stringify(updated));
+    this.emitWebEvent('trusted-devices:updated', null);
+    return true;
+  },
+
+  async reconnectTrustedDevice(deviceId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('reconnect_trusted_device', { deviceId });
+    }
+
+    const current = await this.getTrustedDevices();
+    const updated = current.map(d => (d.deviceId === deviceId ? { ...d, lastConnectedAt: Date.now(), isOnline: true } : d));
+    localStorage.setItem(LOCAL_STORAGE_TRUSTED_KEY, JSON.stringify(updated));
+    this.emitWebEvent('trusted-devices:reconnected', deviceId);
+    this.emitWebEvent('trusted-devices:updated', null);
+    return true;
+  },
+
+  // Helper to simulate an incoming pairing request for interactive browser preview testing
+  simulateIncomingPairing(name = "Aditya's Pixel 8", platform: LocalDeviceInfo['platform'] = 'android'): PairingRequest {
+    const dev = getInitialWebDevice();
+    const request: PairingRequest = {
+      requestId: 'sim-req-' + Math.random().toString(36).substring(2, 9),
+      sessionId: activeWebSession ? activeWebSession.sessionId : 'sess-preview',
+      fromDeviceId: 'sim-peer-' + Math.random().toString(36).substring(2, 7),
+      fromDeviceName: name,
+      fromPlatform: platform,
+      fromDeviceModel: platform === 'android' ? 'Google Pixel 8 Pro' : 'Ubuntu Laptop',
+      fromIpAddress: '192.168.1.142',
+      fromPort: 53317,
+      fromPublicKey: 'f9024c084656ec5688a44d858cf09f25752c00222f7743d78c005b766861614e',
+      fromFingerprint: '9A:14:8B:D3:52:FC:31:01',
+      verificationCode: activeWebSession ? activeWebSession.verificationCode : '481920',
+      timestamp: Date.now(),
+      status: 'pending',
+    };
+
+    pendingWebRequests = [request, ...pendingWebRequests];
+    this.emitWebEvent('pairing:request-received', request);
+    return request;
+  },
+
+  // Event Subscription helper
   async subscribeEvent<T>(eventName: string, handler: (payload: T) => void): Promise<UnlistenFn> {
     if (isTauriEnvironment()) {
       return await listen<T>(eventName, event => handler(event.payload));
