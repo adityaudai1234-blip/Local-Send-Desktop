@@ -3,6 +3,7 @@ use uuid::Uuid;
 
 use crate::discovery::MdnsDiscoveryManager;
 use crate::models::{DeviceType, LocalDeviceInfo, NetworkInterfaceInfo, Platform};
+use crate::networking::ConnectionManager;
 use crate::pairing::HandshakeManager;
 use crate::security::KeyManager;
 use crate::trusted_devices::TrustedDeviceManager;
@@ -13,6 +14,7 @@ pub struct AppState {
     pub key_manager: Arc<KeyManager>,
     pub handshake_manager: Arc<HandshakeManager>,
     pub trusted_devices_manager: Arc<TrustedDeviceManager>,
+    pub connection_manager: Arc<ConnectionManager>,
 }
 
 impl AppState {
@@ -41,6 +43,7 @@ impl AppState {
             key_manager: Arc::new(KeyManager::new()),
             handshake_manager: Arc::new(HandshakeManager::new()),
             trusted_devices_manager: Arc::new(TrustedDeviceManager::new()),
+            connection_manager: Arc::new(ConnectionManager::new()),
         }
     }
 

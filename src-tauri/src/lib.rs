@@ -5,6 +5,8 @@ pub mod services;
 pub mod pairing;
 pub mod security;
 pub mod trusted_devices;
+pub mod networking;
+pub mod protocol;
 
 use commands::*;
 use services::AppState;
@@ -15,6 +17,14 @@ pub fn run() {
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .setup(|app| {
+            let handle = app.handle().clone();
+            let state = app.state::<AppState>();
+            let local = state.get_local_device();
+            let trusted_mgr = state.trusted_devices_manager.clone();
+            state.connection_manager.start_background_tasks(local, trusted_mgr, handle);
+            Ok(())
+        })
         .manage(app_state)
         .invoke_handler(tauri::generate_handler![
             get_local_device_info,
@@ -36,6 +46,16 @@ pub fn run() {
             remove_trusted_device,
             rename_trusted_device,
             reconnect_trusted_device,
+            start_network_service,
+            stop_network_service,
+            connect_to_device,
+            disconnect_from_device,
+            get_active_connections,
+            get_connection_status,
+            send_device_message,
+            reconnect_device,
+            get_network_information,
+            get_network_statistics,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BeamDrop tauri application");

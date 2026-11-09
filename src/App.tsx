@@ -10,6 +10,7 @@ import { Settings } from './pages/Settings';
 import { useDeviceStore } from './stores/deviceStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { usePairingStore } from './stores/pairingStore';
+import { useConnectionStore } from './stores/connectionStore';
 import { ManualAddModal } from './components/devices/ManualAddModal';
 import { PairingModal } from './components/pairing/PairingModal';
 import { QrScannerModal } from './components/pairing/QrScannerModal';
@@ -24,12 +25,14 @@ export default function App() {
 
   const { init: initDevice, error: deviceError, clearError: clearDeviceError } = useDeviceStore();
   const { init: initPairing, notification, clearNotification, error: pairingError, clearError: clearPairingError } = usePairingStore();
+  const { init: initConnection, error: connectionError, clearError: clearConnectionError } = useConnectionStore();
   const { theme } = useSettingsStore();
 
   useEffect(() => {
     initDevice();
     initPairing();
-  }, [initDevice, initPairing]);
+    initConnection();
+  }, [initDevice, initPairing, initConnection]);
 
   const getPageTitle = () => {
     switch (currentTab) {
@@ -51,7 +54,7 @@ export default function App() {
   };
 
   const { title, subtitle } = getPageTitle();
-  const activeError = deviceError || pairingError;
+  const activeError = deviceError || pairingError || connectionError;
 
   return (
     <div className={`min-h-screen flex h-screen overflow-hidden bg-neutral-100 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans ${theme === 'dark' ? 'dark' : ''}`}>
@@ -78,6 +81,7 @@ export default function App() {
               onClick={() => {
                 clearDeviceError();
                 clearPairingError();
+                clearConnectionError();
               }}
               className="p-1 rounded hover:bg-rose-500/20 transition-colors"
             >

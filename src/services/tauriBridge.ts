@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { DiscoveredDevice, DiscoveryState, LocalDeviceInfo, NetworkInterfaceInfo } from '../types/device';
 import { PairingRequest, PairingResponse, PairingSession, QrPayload, TrustedDevice } from '../types/pairing';
+import { PeerConnection, NetworkInformation, NetworkStatistics, ConnectionState } from '../types/networking';
 
 // Detect if running inside Tauri 2 native desktop webview
 export const isTauriEnvironment = (): boolean => {
@@ -75,6 +76,29 @@ let webDiscoveryActive = true;
 let webSubscribers: Record<string, ((payload: unknown) => void)[]> = {};
 let activeWebSession: PairingSession | null = null;
 let pendingWebRequests: PairingRequest[] = [];
+let webNetworkRunning = true;
+let webConnections: Record<string, PeerConnection> = {
+  'peer-pix8-9a3b': {
+    deviceId: 'peer-pix8-9a3b',
+    deviceName: "Aditya's Pixel 8",
+    platform: 'android',
+    ipAddress: '192.168.1.142',
+    port: 53317,
+    state: 'connected',
+    connectedAt: Date.now() - 3600000,
+    lastHeartbeat: Date.now() - 1200,
+    latencyMs: 3,
+    reconnectAttempts: 0,
+    isIncoming: false,
+    txBytes: 450210,
+    rxBytes: 128450,
+  },
+};
+let webTxBytes = 450210;
+let webRxBytes = 128450;
+let webMessagesSent = 84;
+let webMessagesReceived = 42;
+let webStatsStartTime = Date.now() - 7200000;
 
 export const tauriBridge = {
   isNative: isTauriEnvironment,
@@ -534,6 +558,228 @@ export const tauriBridge = {
     return request;
   },
 
+  // -------------------------------------------------------------
+  // PHASE 3: Network Communication & Connection Management APIs
+  // -------------------------------------------------------------
+
+  async startNetworkService(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('start_network_service');
+    }
+    webNetworkRunning = true;
+    this.emitWebEvent('network-status-changed', { running: true });
+    return true;
+  },
+
+  async stopNetworkService(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('stop_network_service');
+    }
+    webNetworkRunning = false;
+    for (const [id, conn] of Object.entries(webConnections)) {
+      conn.state = 'disconnected';
+      this.emitWebEvent('device-disconnected', id);
+      this.emitWebEvent('connection-status-changed', conn);
+    }
+    this.emitWebEvent('network-status-changed', { running: false });
+    return true;
+  },
+
+  async connectToDevice(
+    deviceId: string,
+    deviceName: string,
+    platform: LocalDeviceInfo['platform'],
+    ipAddress: string,
+    port = 53317
+  ): Promise<PeerConnection> {
+    if (isTauriEnvironment()) {
+      return await invoke<PeerConnection>('connect_to_device', {
+        deviceId,
+        deviceName,
+        platform,
+        ipAddress,
+        port,
+      });
+    }
+
+    // Web preview simulation
+    if (!webNetworkRunning) {
+      throw new Error('Network communication service is stopped.');
+    }
+
+    const conn: PeerConnection = {
+      deviceId,
+      deviceName,
+      platform,
+      ipAddress,
+      port,
+      state: 'connecting',
+      connectedAt: null,
+      lastHeartbeat: Date.now(),
+      latencyMs: 0,
+      reconnectAttempts: 0,
+      isIncoming: false,
+      txBytes: 0,
+      rxBytes: 0,
+    };
+
+    webConnections[deviceId] = conn;
+    this.emitWebEvent('connection-status-changed', conn);
+
+    // Asynchronous simulated handshake: connecting -> authenticating -> connected
+    setTimeout(() => {
+      conn.state = 'authenticating';
+      this.emitWebEvent('connection-status-changed', conn);
+
+      setTimeout(() => {
+        conn.state = 'connected';
+        conn.connectedAt = Date.now();
+        conn.lastHeartbeat = Date.now();
+        conn.latencyMs = Math.floor(Math.random() * 5) + 2; // 2ms - 6ms LAN
+        webTxBytes += 1024;
+        webRxBytes += 512;
+        webMessagesSent += 1;
+        webMessagesReceived += 1;
+        this.emitWebEvent('device-connected', conn);
+        this.emitWebEvent('connection-status-changed', conn);
+      }, 350);
+    }, 250);
+
+    return conn;
+  },
+
+  async disconnectFromDevice(deviceId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('disconnect_from_device', { deviceId });
+    }
+
+    const conn = webConnections[deviceId];
+    if (conn) {
+      conn.state = 'disconnected';
+      conn.connectedAt = null;
+      this.emitWebEvent('device-disconnected', deviceId);
+      this.emitWebEvent('connection-status-changed', conn);
+      return true;
+    }
+    return false;
+  },
+
+  async getActiveConnections(): Promise<PeerConnection[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<PeerConnection[]>('get_active_connections');
+    }
+    return Object.values(webConnections);
+  },
+
+  async getConnectionStatus(deviceId: string): Promise<PeerConnection | null> {
+    if (isTauriEnvironment()) {
+      return await invoke<PeerConnection | null>('get_connection_status', { deviceId });
+    }
+    return webConnections[deviceId] || null;
+  },
+
+  async sendDeviceMessage(
+    recipientId: string,
+    messageType: string,
+    payload: unknown
+  ): Promise<unknown> {
+    if (isTauriEnvironment()) {
+      return await invoke<unknown>('send_device_message', {
+        recipientId,
+        messageType,
+        payload,
+      });
+    }
+
+    const conn = webConnections[recipientId];
+    if (!conn || conn.state !== 'connected') {
+      throw new Error(`Device '${recipientId}' is not in connected state`);
+    }
+
+    const msg = {
+      protocolVersion: '1.0',
+      messageId: 'msg-' + Math.random().toString(36).substring(2, 9),
+      senderDeviceId: getInitialWebDevice().id,
+      recipientDeviceId: recipientId,
+      messageType,
+      timestamp: Date.now(),
+      payload,
+    };
+
+    webTxBytes += JSON.stringify(msg).length;
+    webMessagesSent += 1;
+    conn.txBytes += JSON.stringify(msg).length;
+    this.emitWebEvent('message-sent', msg);
+    return msg;
+  },
+
+  async reconnectDevice(deviceId: string): Promise<PeerConnection> {
+    if (isTauriEnvironment()) {
+      return await invoke<PeerConnection>('reconnect_device', { deviceId });
+    }
+
+    const conn = webConnections[deviceId];
+    if (conn) {
+      conn.state = 'reconnecting';
+      conn.reconnectAttempts += 1;
+      this.emitWebEvent('connection-status-changed', conn);
+
+      setTimeout(() => {
+        conn.state = 'connected';
+        conn.connectedAt = Date.now();
+        conn.lastHeartbeat = Date.now();
+        conn.reconnectAttempts = 0;
+        conn.latencyMs = 3;
+        this.emitWebEvent('connection-status-changed', conn);
+        this.emitWebEvent('device-connected', conn);
+      }, 600);
+      return conn;
+    }
+
+    // If not found in memory, try to find in trusted devices
+    const trusted = await this.getTrustedDevices();
+    const target = trusted.find(d => d.deviceId === deviceId);
+    if (!target) {
+      throw new Error(`Device '${deviceId}' not found in trusted storage`);
+    }
+
+    return this.connectToDevice(target.deviceId, target.name, target.platform, target.ipAddress, target.port);
+  },
+
+  async getNetworkInformation(): Promise<NetworkInformation> {
+    if (isTauriEnvironment()) {
+      return await invoke<NetworkInformation>('get_network_information');
+    }
+    const dev = getInitialWebDevice();
+    const active = Object.values(webConnections).filter(c => c.state === 'connected').length;
+
+    return {
+      isAvailable: true,
+      localIp: dev.ipAddresses[0] || '192.168.1.105',
+      port: dev.port,
+      activeConnections: active,
+      totalConnectedDevices: active,
+      serviceRunning: webNetworkRunning,
+    };
+  },
+
+  async getNetworkStatistics(): Promise<NetworkStatistics> {
+    if (isTauriEnvironment()) {
+      return await invoke<NetworkStatistics>('get_network_statistics');
+    }
+    const active = Object.values(webConnections).filter(c => c.state === 'connected').length;
+    const uptime = Math.floor((Date.now() - webStatsStartTime) / 1000);
+
+    return {
+      totalTxBytes: webTxBytes,
+      totalRxBytes: webRxBytes,
+      totalMessagesSent: webMessagesSent,
+      totalMessagesReceived: webMessagesReceived,
+      activeConnectionsCount: active,
+      uptimeSeconds: uptime,
+    };
+  },
+
   // Event Subscription helper
   async subscribeEvent<T>(eventName: string, handler: (payload: T) => void): Promise<UnlistenFn> {
     if (isTauriEnvironment()) {
@@ -558,3 +804,4 @@ export const tauriBridge = {
     }
   },
 };
+

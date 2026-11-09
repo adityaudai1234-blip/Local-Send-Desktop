@@ -7,9 +7,13 @@ import { DiscoveredDevice } from '../types/device';
 import { ManualAddModal } from '../components/devices/ManualAddModal';
 import { PairingModal } from '../components/pairing/PairingModal';
 import { QrScannerModal } from '../components/pairing/QrScannerModal';
+import { NetworkStatusCard } from '../components/networking/NetworkStatusCard';
+import { ConnectionDetailsModal } from '../components/networking/ConnectionDetailsModal';
 import { Modal } from '../components/common/Modal';
 import { useTransferStore } from '../stores/transferStore';
 import { usePairingStore } from '../stores/pairingStore';
+import { useConnectionStore } from '../stores/connectionStore';
+import { PeerConnection } from '../types/networking';
 import { Send, FileText, Check, QrCode, Camera, ShieldCheck, ArrowRight, BellRing } from 'lucide-react';
 import { formatDateTime } from '../utils/formatters';
 
@@ -32,6 +36,7 @@ export const Dashboard: React.FC<DashboardProps> = ({
 
   const { addTransfer } = useTransferStore();
   const { pendingRequests, trustedDevices, acceptRequest, rejectRequest } = usePairingStore();
+  const { selectedConnection, setSelectedConnection } = useConnectionStore();
 
   const activeRequest = pendingRequests[0] || null;
 
@@ -94,9 +99,10 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       )}
 
-      {/* Top Section: Your Device */}
-      <section>
+      {/* Top Section: Your Device & Real-time Network Service */}
+      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
         <YourDeviceCard />
+        <NetworkStatusCard onOpenDetails={(conn: PeerConnection) => setSelectedConnection(conn)} />
       </section>
 
       {/* Pairing & Trusted Devices Overview Strip */}
@@ -208,6 +214,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
       <QrScannerModal
         isOpen={isScanModalOpen}
         onClose={() => setIsScanModalOpen(false)}
+      />
+
+      <ConnectionDetailsModal
+        connection={selectedConnection}
+        isOpen={!!selectedConnection}
+        onClose={() => setSelectedConnection(null)}
       />
 
       {/* Send Files Dialog */}
