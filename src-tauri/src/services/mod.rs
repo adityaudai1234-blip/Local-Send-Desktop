@@ -6,6 +6,7 @@ use crate::models::{DeviceType, LocalDeviceInfo, NetworkInterfaceInfo, Platform}
 use crate::networking::ConnectionManager;
 use crate::pairing::HandshakeManager;
 use crate::security::KeyManager;
+use crate::transfers::TransferManager;
 use crate::trusted_devices::TrustedDeviceManager;
 
 pub struct AppState {
@@ -15,6 +16,7 @@ pub struct AppState {
     pub handshake_manager: Arc<HandshakeManager>,
     pub trusted_devices_manager: Arc<TrustedDeviceManager>,
     pub connection_manager: Arc<ConnectionManager>,
+    pub transfer_manager: Arc<TransferManager>,
 }
 
 impl AppState {
@@ -37,13 +39,17 @@ impl AppState {
             is_discoverable: true,
         };
 
+        let conn_mgr = Arc::new(ConnectionManager::new());
+        let transfer_mgr = Arc::new(TransferManager::new(conn_mgr.clone()));
+
         Self {
             local_device: Arc::new(Mutex::new(local_device)),
             discovery_manager: Arc::new(Mutex::new(MdnsDiscoveryManager::new())),
             key_manager: Arc::new(KeyManager::new()),
             handshake_manager: Arc::new(HandshakeManager::new()),
             trusted_devices_manager: Arc::new(TrustedDeviceManager::new()),
-            connection_manager: Arc::new(ConnectionManager::new()),
+            connection_manager: conn_mgr,
+            transfer_manager: transfer_mgr,
         }
     }
 

@@ -3,6 +3,12 @@ import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { DiscoveredDevice, DiscoveryState, LocalDeviceInfo, NetworkInterfaceInfo } from '../types/device';
 import { PairingRequest, PairingResponse, PairingSession, QrPayload, TrustedDevice } from '../types/pairing';
 import { PeerConnection, NetworkInformation, NetworkStatistics, ConnectionState } from '../types/networking';
+import {
+  SelectedFileItem,
+  TransferSession,
+  TransferProgressPayload,
+  IncomingTransferProposal,
+} from '../types/transfer';
 
 // Detect if running inside Tauri 2 native desktop webview
 export const isTauriEnvironment = (): boolean => {
@@ -99,6 +105,13 @@ let webRxBytes = 128450;
 let webMessagesSent = 84;
 let webMessagesReceived = 42;
 let webStatsStartTime = Date.now() - 7200000;
+
+// Web Transfer Fallback State
+let webSelectedFiles: SelectedFileItem[] = [];
+let webActiveTransfers: Record<string, TransferSession> = {};
+let webDownloadDirectory = '~/Downloads/BeamDrop';
+let webPendingIncomingTransfers: IncomingTransferProposal[] = [];
+let webTransferTimer: number | null = null;
 
 export const tauriBridge = {
   isNative: isTauriEnvironment,
@@ -778,6 +791,328 @@ export const tauriBridge = {
       activeConnectionsCount: active,
       uptimeSeconds: uptime,
     };
+  },
+
+  // --- Phase 4 File Transfer APIs ---
+
+  async selectFiles(filePaths: string[]): Promise<SelectedFileItem[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<SelectedFileItem[]>('select_files', { filePaths });
+    }
+
+    const newItems: SelectedFileItem[] = filePaths.map((p) => {
+      const name = p.split('/').pop() || p.split('\\').pop() || p;
+      const ext = name.includes('.') ? name.split('.').pop()?.toLowerCase() || '' : '';
+      return {
+        id: 'f-' + Math.random().toString(36).substring(2, 9),
+        name,
+        extension: ext,
+        size: Math.floor(Math.random() * 85000000) + 1048576, // 1MB - 86MB mock size
+        mimeType: ext === 'pdf' ? 'application/pdf' : ext === 'mp4' ? 'video/mp4' : 'application/octet-stream',
+        path: p,
+        lastModified: Date.now() - 3600000,
+      };
+    });
+
+    webSelectedFiles = [...webSelectedFiles, ...newItems];
+    return webSelectedFiles;
+  },
+
+  async addMockFile(file: { name: string; size: number; mimeType: string; path?: string }): Promise<SelectedFileItem[]> {
+    const ext = file.name.includes('.') ? file.name.split('.').pop()?.toLowerCase() || '' : '';
+    const item: SelectedFileItem = {
+      id: 'f-' + Math.random().toString(36).substring(2, 9),
+      name: file.name,
+      extension: ext,
+      size: file.size,
+      mimeType: file.mimeType || 'application/octet-stream',
+      path: file.path || `~/Documents/${file.name}`,
+      lastModified: Date.now(),
+    };
+    webSelectedFiles = [...webSelectedFiles, item];
+    return webSelectedFiles;
+  },
+
+  async getSelectedFiles(): Promise<SelectedFileItem[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<SelectedFileItem[]>('get_selected_files');
+    }
+    return webSelectedFiles;
+  },
+
+  async removeSelectedFile(fileId: string): Promise<SelectedFileItem[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<SelectedFileItem[]>('remove_selected_file', { fileId });
+    }
+    webSelectedFiles = webSelectedFiles.filter(f => f.id !== fileId);
+    return webSelectedFiles;
+  },
+
+  async clearSelectedFiles(): Promise<void> {
+    if (isTauriEnvironment()) {
+      await invoke('clear_selected_files');
+      return;
+    }
+    webSelectedFiles = [];
+  },
+
+  async getDownloadDirectory(): Promise<string> {
+    if (isTauriEnvironment()) {
+      return await invoke<string>('get_download_directory');
+    }
+    return webDownloadDirectory;
+  },
+
+  async setDownloadDirectory(path: string): Promise<string> {
+    if (isTauriEnvironment()) {
+      return await invoke<string>('set_download_directory', { path });
+    }
+    webDownloadDirectory = path;
+    return path;
+  },
+
+  async openReceivedFileLocation(path: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('open_received_file_location', { path });
+    }
+    return true;
+  },
+
+  async startFileTransfer(params: {
+    recipientId: string;
+    recipientName: string;
+    recipientIp: string;
+    recipientPort?: number;
+    fileIds?: string[];
+  }): Promise<TransferSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession>('start_file_transfer', {
+        recipientId: params.recipientId,
+        recipientName: params.recipientName,
+        recipientIp: params.recipientIp,
+        recipientPort: params.recipientPort || 53317,
+        fileIds: params.fileIds,
+      });
+    }
+
+    const localDev = getInitialWebDevice();
+    const filesToSend = params.fileIds
+      ? webSelectedFiles.filter(f => params.fileIds?.includes(f.id))
+      : webSelectedFiles;
+
+    const totalBytes = filesToSend.reduce((acc, f) => acc + f.size, 0);
+    const transferId = 'tx-' + Math.random().toString(36).substring(2, 9);
+
+    const session: TransferSession = {
+      transferId,
+      direction: 'outgoing',
+      senderDeviceId: localDev.id,
+      senderDeviceName: localDev.name,
+      senderPlatform: localDev.platform,
+      recipientDeviceId: params.recipientId,
+      recipientDeviceName: params.recipientName,
+      recipientIp: params.recipientIp,
+      recipientPort: params.recipientPort || 53317,
+      files: filesToSend.map(f => ({
+        fileId: f.id,
+        name: f.name,
+        size: f.size,
+        mimeType: f.mimeType,
+        path: f.path,
+        isVerified: false,
+        bytesTransferred: 0,
+        status: 'transferring',
+      })),
+      totalBytes,
+      bytesTransferred: 0,
+      speedBytesPerSec: 18500000,
+      estimatedSecondsRemaining: Math.ceil(totalBytes / 18500000),
+      status: 'transferring',
+      startedAt: Date.now(),
+      destinationDirectory: webDownloadDirectory,
+    };
+
+    webActiveTransfers[transferId] = session;
+
+    // Simulate real streaming chunks in web preview
+    let currentBytes = 0;
+    const interval = setInterval(() => {
+      currentBytes += 3500000;
+      if (currentBytes >= totalBytes) {
+        currentBytes = totalBytes;
+        clearInterval(interval);
+        session.status = 'completed';
+        session.bytesTransferred = totalBytes;
+        session.completedAt = Date.now();
+        session.speedBytesPerSec = 0;
+        this.emitWebEvent('transfer-completed', session);
+      } else {
+        session.bytesTransferred = currentBytes;
+        const remaining = totalBytes - currentBytes;
+        session.estimatedSecondsRemaining = Math.max(1, Math.ceil(remaining / session.speedBytesPerSec));
+        this.emitWebEvent('transfer-progress', {
+          transferId,
+          fileId: session.files[0]?.fileId || 'f1',
+          fileName: session.files[0]?.name || 'transfer.bin',
+          currentFileIndex: 1,
+          totalFiles: session.files.length,
+          bytesTransferred: currentBytes,
+          totalBytes,
+          percentage: Math.round((currentBytes / totalBytes) * 100),
+          speedBytesPerSec: session.speedBytesPerSec,
+          estimatedSecondsRemaining: session.estimatedSecondsRemaining,
+          status: 'transferring',
+        });
+      }
+    }, 250);
+
+    return session;
+  },
+
+  async acceptTransfer(transferId: string): Promise<TransferSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession>('accept_transfer', { transferId });
+    }
+
+    const pending = webPendingIncomingTransfers.find(p => p.transferId === transferId);
+    const localDev = getInitialWebDevice();
+    const session: TransferSession = {
+      transferId,
+      direction: 'incoming',
+      senderDeviceId: pending?.senderDeviceId || 'peer-remote',
+      senderDeviceName: pending?.senderDeviceName || 'Remote Peer',
+      senderPlatform: pending?.senderPlatform || 'android',
+      recipientDeviceId: localDev.id,
+      recipientDeviceName: localDev.name,
+      recipientIp: localDev.ipAddresses[0] || '192.168.1.105',
+      recipientPort: localDev.port,
+      files: pending?.files.map(f => ({
+        fileId: f.fileId,
+        name: f.fileName,
+        size: f.fileSize,
+        mimeType: f.mimeType,
+        isVerified: true,
+        bytesTransferred: f.fileSize,
+        status: 'completed',
+      })) || [],
+      totalBytes: pending?.totalBytes || 10485760,
+      bytesTransferred: pending?.totalBytes || 10485760,
+      speedBytesPerSec: 0,
+      status: 'completed',
+      startedAt: Date.now() - 3000,
+      completedAt: Date.now(),
+      destinationDirectory: webDownloadDirectory,
+    };
+
+    webActiveTransfers[transferId] = session;
+    webPendingIncomingTransfers = webPendingIncomingTransfers.filter(p => p.transferId !== transferId);
+    this.emitWebEvent('transfer-completed', session);
+    return session;
+  },
+
+  async rejectTransfer(transferId: string, reason?: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      await invoke('reject_transfer', { transferId, reason });
+      return true;
+    }
+    webPendingIncomingTransfers = webPendingIncomingTransfers.filter(p => p.transferId !== transferId);
+    this.emitWebEvent('transfer-rejected', { transferId, reason: reason || 'Declined' });
+    return true;
+  },
+
+  async pauseTransfer(transferId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      await invoke('pause_transfer', { transferId });
+      return true;
+    }
+    if (webActiveTransfers[transferId]) {
+      webActiveTransfers[transferId].status = 'paused';
+      webActiveTransfers[transferId].speedBytesPerSec = 0;
+      this.emitWebEvent('transfer-updated', webActiveTransfers[transferId]);
+    }
+    return true;
+  },
+
+  async resumeTransfer(transferId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      await invoke('resume_transfer', { transferId });
+      return true;
+    }
+    if (webActiveTransfers[transferId]) {
+      webActiveTransfers[transferId].status = 'transferring';
+      webActiveTransfers[transferId].speedBytesPerSec = 15200000;
+      this.emitWebEvent('transfer-updated', webActiveTransfers[transferId]);
+    }
+    return true;
+  },
+
+  async cancelTransfer(transferId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      await invoke('cancel_transfer', { transferId });
+      return true;
+    }
+    if (webActiveTransfers[transferId]) {
+      webActiveTransfers[transferId].status = 'cancelled';
+      webActiveTransfers[transferId].speedBytesPerSec = 0;
+      this.emitWebEvent('transfer-cancelled', webActiveTransfers[transferId]);
+    }
+    return true;
+  },
+
+  async cancelTransferBatch(): Promise<number> {
+    if (isTauriEnvironment()) {
+      return await invoke<number>('cancel_transfer_batch');
+    }
+    const count = Object.keys(webActiveTransfers).length;
+    Object.values(webActiveTransfers).forEach(s => {
+      s.status = 'cancelled';
+    });
+    return count;
+  },
+
+  async getActiveTransfers(): Promise<TransferSession[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession[]>('get_active_transfers');
+    }
+    return Object.values(webActiveTransfers);
+  },
+
+  async getTransferDetails(transferId: string): Promise<TransferSession | null> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession | null>('get_transfer_details', { transferId });
+    }
+    return webActiveTransfers[transferId] || null;
+  },
+
+  simulateIncomingTransferRequest(fromDevice?: Partial<DiscoveredDevice>): IncomingTransferProposal {
+    const proposal: IncomingTransferProposal = {
+      transferId: 'tx-inc-' + Math.random().toString(36).substring(2, 9),
+      senderDeviceId: fromDevice?.id || 'peer-pix8-9a3b',
+      senderDeviceName: fromDevice?.name || "Aditya's Pixel 8",
+      senderPlatform: fromDevice?.platform || 'android',
+      senderIpAddress: fromDevice?.ipAddress || '192.168.1.142',
+      fileCount: 2,
+      totalBytes: 52428800, // 50 MB
+      files: [
+        {
+          fileId: 'f-p8-01',
+          fileName: 'Pixel_Camera_Photos_2026.zip',
+          fileSize: 41943040,
+          mimeType: 'application/zip',
+        },
+        {
+          fileId: 'f-p8-02',
+          fileName: 'audio_recording_notes.m4a',
+          fileSize: 10485760,
+          mimeType: 'audio/mp4',
+        },
+      ],
+      expiresAt: Date.now() + 60000,
+    };
+
+    webPendingIncomingTransfers.push(proposal);
+    this.emitWebEvent('incoming-transfer-request', proposal);
+    return proposal;
   },
 
   // Event Subscription helper

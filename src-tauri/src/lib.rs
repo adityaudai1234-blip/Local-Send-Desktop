@@ -7,6 +7,8 @@ pub mod security;
 pub mod trusted_devices;
 pub mod networking;
 pub mod protocol;
+pub mod file_system;
+pub mod transfers;
 
 use commands::*;
 use services::AppState;
@@ -22,7 +24,8 @@ pub fn run() {
             let state = app.state::<AppState>();
             let local = state.get_local_device();
             let trusted_mgr = state.trusted_devices_manager.clone();
-            state.connection_manager.start_background_tasks(local, trusted_mgr, handle);
+            state.connection_manager.start_background_tasks(local, trusted_mgr, handle.clone());
+            state.transfer_manager.set_app_handle(handle);
             Ok(())
         })
         .manage(app_state)
@@ -56,6 +59,22 @@ pub fn run() {
             reconnect_device,
             get_network_information,
             get_network_statistics,
+            select_files,
+            get_selected_files,
+            remove_selected_file,
+            clear_selected_files,
+            get_download_directory,
+            set_download_directory,
+            open_received_file_location,
+            start_file_transfer,
+            accept_transfer,
+            reject_transfer,
+            pause_transfer,
+            resume_transfer,
+            cancel_transfer,
+            cancel_transfer_batch,
+            get_active_transfers,
+            get_transfer_details,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BeamDrop tauri application");

@@ -9,6 +9,9 @@ import { PairingModal } from '../components/pairing/PairingModal';
 import { QrScannerModal } from '../components/pairing/QrScannerModal';
 import { NetworkStatusCard } from '../components/networking/NetworkStatusCard';
 import { ConnectionDetailsModal } from '../components/networking/ConnectionDetailsModal';
+import { SendFilesDropzone } from '../components/transfers/SendFilesDropzone';
+import { IncomingTransferModal } from '../components/transfers/IncomingTransferModal';
+import { TransferDetailsModal } from '../components/transfers/TransferDetailsModal';
 import { Modal } from '../components/common/Modal';
 import { useTransferStore } from '../stores/transferStore';
 import { usePairingStore } from '../stores/pairingStore';
@@ -180,6 +183,11 @@ export const Dashboard: React.FC<DashboardProps> = ({
         </div>
       </section>
 
+      {/* Send Files Dropzone Section */}
+      <section>
+        <SendFilesDropzone onTransferStarted={onNavigateToTransfers} />
+      </section>
+
       {/* Middle Grid: Nearby Devices (Dominant Anchor) */}
       <section>
         <NearbyDevicesGrid
@@ -221,6 +229,12 @@ export const Dashboard: React.FC<DashboardProps> = ({
         isOpen={!!selectedConnection}
         onClose={() => setSelectedConnection(null)}
       />
+
+      {/* Incoming File Transfer Request Modal */}
+      <IncomingTransferModal />
+
+      {/* Deep Session Details Modal */}
+      <TransferDetailsModal />
 
       {/* Send Files Dialog */}
       {selectedDeviceForSend && (

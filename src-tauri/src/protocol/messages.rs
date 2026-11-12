@@ -19,7 +19,17 @@ pub enum MessageType {
     TransferRequest,
     TransferAccepted,
     TransferRejected,
+    TransferStarted,
+    TransferProgress,
+    TransferCompleted,
+    TransferFailed,
     TransferCancelled,
+    TransferPaused,
+    TransferResumed,
+    FileMetadata,
+    FileChunk,
+    FileVerification,
+    TransferError,
     Error,
 }
 
@@ -119,10 +129,64 @@ pub struct AuthResponsePayload {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct TransferRequestPayload {
-    pub transfer_id: String,
+pub struct FileItemPayload {
+    pub file_id: String,
     pub file_name: String,
     pub file_size: u64,
     pub mime_type: String,
     pub sha256_checksum: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferRequestPayload {
+    pub transfer_id: String,
+    pub file_count: usize,
+    pub total_bytes: u64,
+    pub files: Vec<FileItemPayload>,
+    pub expires_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferAcceptedPayload {
+    pub transfer_id: String,
+    pub accepted_file_ids: Vec<String>,
+    pub max_chunk_size: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferRejectedPayload {
+    pub transfer_id: String,
+    pub reason: String,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferProgressPayload {
+    pub transfer_id: String,
+    pub file_id: String,
+    pub bytes_transferred: u64,
+    pub total_bytes: u64,
+    pub speed_bytes_per_sec: u64,
+    pub estimated_seconds_remaining: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileVerificationPayload {
+    pub transfer_id: String,
+    pub file_id: String,
+    pub sender_sha256: String,
+    pub total_bytes_sent: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TransferErrorPayload {
+    pub transfer_id: String,
+    pub code: String,
+    pub message: String,
 }

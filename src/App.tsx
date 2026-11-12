@@ -11,6 +11,7 @@ import { useDeviceStore } from './stores/deviceStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { usePairingStore } from './stores/pairingStore';
 import { useConnectionStore } from './stores/connectionStore';
+import { useTransferStore } from './stores/transferStore';
 import { ManualAddModal } from './components/devices/ManualAddModal';
 import { PairingModal } from './components/pairing/PairingModal';
 import { QrScannerModal } from './components/pairing/QrScannerModal';
@@ -24,15 +25,17 @@ export default function App() {
   const [isScanModalOpen, setIsScanModalOpen] = useState(false);
 
   const { init: initDevice, error: deviceError, clearError: clearDeviceError } = useDeviceStore();
-  const { init: initPairing, notification, clearNotification, error: pairingError, clearError: clearPairingError } = usePairingStore();
+  const { init: initPairing, notification: pairingNotification, clearNotification: clearPairingNotification, error: pairingError, clearError: clearPairingError } = usePairingStore();
   const { init: initConnection, error: connectionError, clearError: clearConnectionError } = useConnectionStore();
+  const { init: initTransfer, notification: transferNotification, clearNotification: clearTransferNotification, error: transferError, clearError: clearTransferError } = useTransferStore();
   const { theme } = useSettingsStore();
 
   useEffect(() => {
     initDevice();
     initPairing();
     initConnection();
-  }, [initDevice, initPairing, initConnection]);
+    initTransfer();
+  }, [initDevice, initPairing, initConnection, initTransfer]);
 
   const getPageTitle = () => {
     switch (currentTab) {
@@ -54,7 +57,8 @@ export default function App() {
   };
 
   const { title, subtitle } = getPageTitle();
-  const activeError = deviceError || pairingError || connectionError;
+  const activeError = deviceError || pairingError || connectionError || transferError;
+  const activeNotification = pairingNotification || transferNotification;
 
   return (
     <div className={`min-h-screen flex h-screen overflow-hidden bg-neutral-100 dark:bg-neutral-950 text-neutral-900 dark:text-neutral-100 font-sans ${theme === 'dark' ? 'dark' : ''}`}>
@@ -82,6 +86,7 @@ export default function App() {
                 clearDeviceError();
                 clearPairingError();
                 clearConnectionError();
+                clearTransferError();
               }}
               className="p-1 rounded hover:bg-rose-500/20 transition-colors"
             >
@@ -91,24 +96,27 @@ export default function App() {
         )}
 
         {/* Floating Notification Toast */}
-        {notification && (
+        {activeNotification && (
           <div className="absolute top-20 right-8 z-50 max-w-sm p-3.5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white/95 dark:bg-neutral-900/95 backdrop-blur-md shadow-lg animate-in slide-in-from-top-3 flex items-start gap-3 text-xs">
-            {notification.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />}
-            {notification.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />}
-            {notification.type === 'warning' && <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />}
-            {notification.type === 'info' && <Info className="w-4 h-4 text-cyan-500 shrink-0 mt-0.5" />}
+            {activeNotification.type === 'success' && <CheckCircle2 className="w-4 h-4 text-emerald-500 shrink-0 mt-0.5" />}
+            {activeNotification.type === 'error' && <AlertCircle className="w-4 h-4 text-rose-500 shrink-0 mt-0.5" />}
+            {activeNotification.type === 'warning' && <ShieldAlert className="w-4 h-4 text-amber-500 shrink-0 mt-0.5" />}
+            {activeNotification.type === 'info' && <Info className="w-4 h-4 text-cyan-500 shrink-0 mt-0.5" />}
             
             <div className="flex-1 min-w-0">
               <h5 className="font-semibold text-neutral-900 dark:text-white leading-tight">
-                {notification.title}
+                {activeNotification.title}
               </h5>
               <p className="text-neutral-500 dark:text-neutral-400 mt-0.5">
-                {notification.message}
+                {activeNotification.message}
               </p>
             </div>
 
             <button
-              onClick={clearNotification}
+              onClick={() => {
+                clearPairingNotification();
+                clearTransferNotification();
+              }}
               className="p-1 text-neutral-400 hover:text-neutral-600 dark:hover:text-neutral-200 rounded"
             >
               <X className="w-3.5 h-3.5" />
