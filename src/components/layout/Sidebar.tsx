@@ -4,6 +4,7 @@ import {
   Radio,
   ArrowLeftRight,
   Clock,
+  BarChart3,
   Settings,
   Sun,
   Moon,
@@ -15,6 +16,7 @@ import {
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { usePairingStore } from '../../stores/pairingStore';
+import { useTransferStore } from '../../stores/transferStore';
 import { isTauriEnvironment } from '../../services/tauriBridge';
 
 interface SidebarProps {
@@ -26,14 +28,16 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
   const { theme, toggleTheme } = useSettingsStore();
   const { discoveryState } = useDeviceStore();
   const { trustedDevices } = usePairingStore();
+  const { overviewStats } = useTransferStore();
   const isNative = isTauriEnvironment();
 
   const navItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
     { id: 'devices', label: 'Nearby Devices', icon: Radio, count: discoveryState.deviceCount },
     { id: 'trusted', label: 'Trusted Devices', icon: ShieldCheck, count: trustedDevices.length },
-    { id: 'transfers', label: 'Transfers', icon: ArrowLeftRight },
+    { id: 'transfers', label: 'Transfers', icon: ArrowLeftRight, count: overviewStats.activeCount },
     { id: 'history', label: 'History', icon: Clock },
+    { id: 'analytics', label: 'Analytics', icon: BarChart3 },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

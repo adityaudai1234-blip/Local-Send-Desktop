@@ -1,7 +1,11 @@
 use tauri::State;
 
 use crate::services::AppState;
+use crate::system_tray::BackgroundTransferStatus;
 use crate::transfers::metadata::TransferSession;
+use crate::transfers::priority::TransferPriority;
+use crate::transfers::recovery::RecoverableTransferInfo;
+use crate::transfers::scheduler::QueuedTransferInfo;
 
 #[tauri::command]
 pub async fn start_file_transfer(
@@ -10,6 +14,7 @@ pub async fn start_file_transfer(
     recipient_ip: String,
     recipient_port: u16,
     file_ids: Option<Vec<String>>,
+    priority: Option<TransferPriority>,
     state: State<'_, AppState>,
 ) -> Result<TransferSession, String> {
     let local = state.get_local_device();
@@ -25,6 +30,7 @@ pub async fn start_file_transfer(
             recipient_ip,
             recipient_port,
             file_ids,
+            priority,
         )
         .await
 }
@@ -45,7 +51,10 @@ pub async fn reject_transfer(
 ) -> Result<(), String> {
     state
         .transfer_manager
-        .reject_transfer(&transfer_id, &reason.unwrap_or_else(|| "Declined by user".to_string()))
+        .reject_transfer(
+            &transfer_id,
+            &reason.unwrap_or_else(|| "Declined by user".to_string()),
+        )
         .await
 }
 
@@ -74,10 +83,18 @@ pub async fn cancel_transfer(
 }
 
 #[tauri::command]
-pub async fn cancel_transfer_batch(
-    state: State<'_, AppState>,
-) -> Result<usize, String> {
+pub async fn cancel_transfer_batch(state: State<'_, AppState>) -> Result<usize, String> {
     Ok(state.transfer_manager.cancel_transfer_batch())
+}
+
+#[tauri::command]
+pub async fn pause_all_transfers(state: State<'_, AppState>) -> Result<usize, String> {
+    Ok(state.transfer_manager.pause_all_transfers())
+}
+
+#[tauri::command]
+pub async fn resume_all_transfers(state: State<'_, AppState>) -> Result<usize, String> {
+    Ok(state.transfer_manager.resume_all_transfers())
 }
 
 #[tauri::command]
@@ -93,4 +110,64 @@ pub async fn get_transfer_details(
     state: State<'_, AppState>,
 ) -> Result<Option<TransferSession>, String> {
     Ok(state.transfer_manager.get_transfer_details(&transfer_id))
+}
+
+#[tauri::command]
+pub async fn get_transfer_queue(
+    state: State<'_, AppState>,
+) -> Result<Vec<QueuedTransferInfo>, String> {
+    Ok(state.transfer_manager.get_transfer_queue())
+}
+
+#[tauri::command]
+pub async fn change_transfer_priority(
+    transfer_id: String,
+    priority: TransferPriority,
+    state: State<'_, AppState>,
+) -> Result<usize, String> {
+    state
+        .transfer_manager
+        .change_transfer_priority(&transfer_id, priority)
+}
+
+#[tauri::command]
+pub async fn retry_transfer(
+    transfer_id: String,
+    state: State<'_, AppState>,
+) -> Result<TransferSession, String> {
+    state.transfer_manager.retry_transfer(&transfer_id).await
+}
+
+#[tauri::command]
+pub async fn remove_transfer(
+    transfer_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    state.transfer_manager.remove_transfer(&transfer_id)
+}
+
+#[tauri::command]
+pub async fn get_background_transfer_status(
+    state: State<'_, AppState>,
+) -> Result<BackgroundTransferStatus, String> {
+    Ok(state.transfer_manager.get_background_transfer_status())
+}
+
+#[tauri::command]
+pub async fn get_recoverable_transfers(
+    state: State<'_, AppState>,
+) -> Result<Vec<RecoverableTransferInfo>, String> {
+    Ok(state.transfer_manager.get_recoverable_transfers())
+}
+
+#[tauri::command]
+pub async fn recover_transfer(
+    transfer_id: String,
+    fresh_retry: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<TransferSession, String> {
+    state
+        .transfer_manager
+        .recover_transfer(&transfer_id, fresh_retry.unwrap_or(false))
+        .await
 }

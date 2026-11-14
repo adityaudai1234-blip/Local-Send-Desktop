@@ -112,7 +112,7 @@ pub fn calculate_statistics(conn: &Connection, time_frame: &str) -> Result<Trans
     let average_speed = if speed_entries > 0.0 {
         (speed_sum / speed_entries) as u64
     } else {
-        15_800_000 // default LAN baseline ~15.8 MB/s
+        0
     };
 
     let total_finished = successful_count + failed_count;

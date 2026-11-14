@@ -2,8 +2,10 @@ use std::sync::{Arc, Mutex};
 use uuid::Uuid;
 
 use crate::discovery::MdnsDiscoveryManager;
+use crate::history::repository::HistoryRepository;
 use crate::models::{DeviceType, LocalDeviceInfo, NetworkInterfaceInfo, Platform};
 use crate::networking::ConnectionManager;
+use crate::notifications::NotificationManager;
 use crate::pairing::HandshakeManager;
 use crate::security::KeyManager;
 use crate::transfers::TransferManager;
@@ -17,6 +19,8 @@ pub struct AppState {
     pub trusted_devices_manager: Arc<TrustedDeviceManager>,
     pub connection_manager: Arc<ConnectionManager>,
     pub transfer_manager: Arc<TransferManager>,
+    pub history_repository: Arc<HistoryRepository>,
+    pub notification_manager: Arc<NotificationManager>,
 }
 
 impl AppState {
@@ -40,16 +44,29 @@ impl AppState {
         };
 
         let conn_mgr = Arc::new(ConnectionManager::new());
-        let transfer_mgr = Arc::new(TransferManager::new(conn_mgr.clone()));
+        let trusted_mgr = Arc::new(TrustedDeviceManager::new());
+        let history_repo = Arc::new(
+            HistoryRepository::new("beamdrop_transfers.sqlite")
+                .unwrap_or_else(|_| HistoryRepository::new_in_memory().expect("in-memory sqlite failed")),
+        );
+        let notif_mgr = Arc::new(NotificationManager::new());
+        let transfer_mgr = Arc::new(TransferManager::new(
+            conn_mgr.clone(),
+            history_repo.clone(),
+            notif_mgr.clone(),
+            trusted_mgr.clone(),
+        ));
 
         Self {
             local_device: Arc::new(Mutex::new(local_device)),
             discovery_manager: Arc::new(Mutex::new(MdnsDiscoveryManager::new())),
             key_manager: Arc::new(KeyManager::new()),
             handshake_manager: Arc::new(HandshakeManager::new()),
-            trusted_devices_manager: Arc::new(TrustedDeviceManager::new()),
+            trusted_devices_manager: trusted_mgr,
             connection_manager: conn_mgr,
             transfer_manager: transfer_mgr,
+            history_repository: history_repo,
+            notification_manager: notif_mgr,
         }
     }
 

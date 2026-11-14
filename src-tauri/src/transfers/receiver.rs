@@ -5,10 +5,11 @@ use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::Mutex;
 
-use super::metadata::{TransferFileItem, TransferSession, TransferStatus};
+use super::metadata::TransferFileItem;
 use super::verification::StreamHasher;
 use crate::file_system::filename::resolve_conflict;
 use crate::file_system::storage::{atomic_finalize_part_file, clean_incomplete_file, get_download_directory, get_part_file_path};
+use crate::folders::structure::prepare_incoming_path;
 
 pub struct ActiveFileReceive {
     pub file_id: String,
@@ -31,14 +32,37 @@ impl FileReceiver {
         }
     }
 
-    /// Initializes a receiving slot for an incoming file, opening a `.part` file
+    /// Initializes a receiving slot for an incoming file or directory, preserving safe folder structure
     pub async fn prepare_file_reception(
         &self,
         transfer_id: &str,
         file_item: &TransferFileItem,
     ) -> Result<PathBuf, String> {
         let download_dir = get_download_directory();
-        let target_path = resolve_conflict(&download_dir, &file_item.name);
+
+        if file_item.is_directory {
+            let rel = file_item
+                .relative_path
+                .as_deref()
+                .unwrap_or(&file_item.name);
+            return prepare_incoming_path(&download_dir, rel, true);
+        }
+
+        let target_path = if let Some(ref rel_path) = file_item.relative_path {
+            let prepared = prepare_incoming_path(&download_dir, rel_path, false)?;
+            if prepared.exists() {
+                if let Some(parent) = prepared.parent() {
+                    resolve_conflict(parent, &file_item.name)
+                } else {
+                    resolve_conflict(&download_dir, &file_item.name)
+                }
+            } else {
+                prepared
+            }
+        } else {
+            resolve_conflict(&download_dir, &file_item.name)
+        };
+
         let part_path = get_part_file_path(&target_path, transfer_id);
 
         let writer = OpenOptions::new()

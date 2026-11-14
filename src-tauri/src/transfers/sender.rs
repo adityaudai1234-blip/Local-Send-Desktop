@@ -38,8 +38,16 @@ impl FileSender {
                 file_size: f.size,
                 mime_type: f.mime_type.clone(),
                 sha256_checksum: f.sha256_checksum.clone(),
+                relative_path: f.relative_path.clone(),
+                is_directory: Some(f.is_directory),
             })
             .collect();
+
+        let priority_str = match session.priority {
+            super::priority::TransferPriority::High => "high",
+            super::priority::TransferPriority::Low => "low",
+            super::priority::TransferPriority::Normal => "normal",
+        };
 
         let payload = TransferRequestPayload {
             transfer_id: session.transfer_id.clone(),
@@ -47,6 +55,9 @@ impl FileSender {
             total_bytes: session.total_bytes,
             files: files_payload,
             expires_at: chrono::Utc::now().timestamp_millis() + 60000,
+            is_folder: Some(session.is_folder),
+            root_folder_name: session.root_folder_name.clone(),
+            priority: Some(priority_str.to_string()),
         };
 
         let msg = ProtocolMessage::new(
@@ -78,6 +89,30 @@ impl FileSender {
         for (file_idx, file_item) in session.files.iter_mut().enumerate() {
             if is_cancelled.load(Ordering::SeqCst) {
                 return Err("Transfer was cancelled by sender".to_string());
+            }
+
+            // Empty directory entry: emit directory metadata marker without file stream
+            if file_item.is_directory {
+                let dir_msg = ProtocolMessage::new(
+                    session.sender_device_id.clone(),
+                    session.recipient_device_id.clone(),
+                    MessageType::FileMetadata,
+                    serde_json::json!({
+                        "transferId": session.transfer_id,
+                        "fileId": file_item.file_id,
+                        "fileName": file_item.name,
+                        "relativePath": file_item.relative_path,
+                        "isDirectory": true,
+                        "fileSize": 0
+                    }),
+                );
+                let _ = self
+                    .connection_manager
+                    .send_protocol_message(&session.recipient_device_id, &dir_msg)
+                    .await;
+                file_item.is_verified = true;
+                file_item.status = TransferStatus::Completed;
+                continue;
             }
 
             let file_path_str = match &file_item.path {

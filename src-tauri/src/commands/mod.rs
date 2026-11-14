@@ -6,6 +6,10 @@ pub mod networking;
 pub mod connections;
 pub mod files;
 pub mod transfers;
+pub mod folders;
+pub mod history;
+pub mod statistics;
+pub mod notifications;
 
 pub use device::*;
 pub use network::*;
@@ -15,4 +19,7 @@ pub use networking::*;
 pub use connections::*;
 pub use files::*;
 pub use transfers::*;
-
+pub use folders::*;
+pub use history::*;
+pub use statistics::*;
+pub use notifications::*;

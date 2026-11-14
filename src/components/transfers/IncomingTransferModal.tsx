@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { Download, X, Check, ShieldCheck, File, Clock } from 'lucide-react';
+import { Download, ShieldCheck, File, Folder, Clock } from 'lucide-react';
 import { useTransferStore } from '../../stores/transferStore';
 import { Modal } from '../common/Modal';
 import { PlatformIcon } from '../common/PlatformIcon';
@@ -32,8 +32,8 @@ export const IncomingTransferModal: React.FC = () => {
     <Modal
       isOpen={!!activeIncomingProposal}
       onClose={() => rejectIncomingTransfer(activeIncomingProposal.transferId, 'Dismissed')}
-      title="Incoming File Transfer Request"
-      description="A remote peer wants to send files over your local Wi-Fi connection."
+      title={activeIncomingProposal.isFolder ? 'Incoming Folder Transfer Request' : 'Incoming File Transfer Request'}
+      description="A remote peer wants to transfer local data over your encrypted LAN socket."
     >
       <div className="space-y-4 text-xs">
         {/* Sender Device Card */}
@@ -58,10 +58,15 @@ export const IncomingTransferModal: React.FC = () => {
           </div>
         </div>
 
-        {/* Files Overview */}
+        {/* Folder/Files Overview */}
         <div className="space-y-2">
           <div className="flex justify-between text-neutral-600 dark:text-neutral-400 font-medium">
-            <span>Files ({activeIncomingProposal.fileCount})</span>
+            <span className="flex items-center gap-1.5">
+              {activeIncomingProposal.isFolder && <Folder className="w-3.5 h-3.5 text-amber-500" />}
+              {activeIncomingProposal.rootFolderName
+                ? `${activeIncomingProposal.rootFolderName}/ (${activeIncomingProposal.fileCount} items)`
+                : `Files (${activeIncomingProposal.fileCount})`}
+            </span>
             <span className="font-mono">{formatBytes(activeIncomingProposal.totalBytes)}</span>
           </div>
 
@@ -71,14 +76,18 @@ export const IncomingTransferModal: React.FC = () => {
                 key={f.fileId}
                 className="flex items-center justify-between p-2 rounded-lg bg-neutral-100/70 dark:bg-neutral-800/40 border border-neutral-200/50 dark:border-neutral-700/50"
               >
-                <div className="flex items-center gap-2 truncate">
-                  <File className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                <div className="flex items-center gap-2 truncate min-w-0">
+                  {f.isDirectory ? (
+                    <Folder className="w-3.5 h-3.5 text-amber-500 shrink-0" />
+                  ) : (
+                    <File className="w-3.5 h-3.5 text-neutral-400 shrink-0" />
+                  )}
                   <span className="truncate text-neutral-900 dark:text-white font-medium">
-                    {f.fileName}
+                    {f.relativePath || f.fileName}
                   </span>
                 </div>
-                <span className="font-mono text-neutral-500 shrink-0 text-[11px]">
-                  {formatBytes(f.fileSize)}
+                <span className="font-mono text-neutral-500 shrink-0 text-[11px] pl-2">
+                  {f.isDirectory ? 'dir' : formatBytes(f.fileSize)}
                 </span>
               </div>
             ))}
@@ -89,7 +98,7 @@ export const IncomingTransferModal: React.FC = () => {
         <div className="p-3 rounded-lg bg-emerald-500/10 border border-emerald-500/20 text-emerald-700 dark:text-emerald-400 flex items-center gap-2.5">
           <ShieldCheck className="w-4 h-4 shrink-0" />
           <span className="text-[11px]">
-            Files will be streamed into your configured downloads folder and verified against SHA-256 integrity hashes.
+            Paths are validated against directory traversal, collisions are renamed automatically, and every file is SHA-256 verified.
           </span>
         </div>
 
@@ -106,7 +115,7 @@ export const IncomingTransferModal: React.FC = () => {
             className="flex items-center gap-1.5 px-5 py-2 text-xs font-semibold rounded-xl bg-neutral-900 dark:bg-neutral-100 text-white dark:text-neutral-900 hover:bg-neutral-800 dark:hover:bg-neutral-200 transition-colors shadow-sm"
           >
             <Download className="w-3.5 h-3.5" />
-            <span>Accept & Receive</span>
+            <span>Accept &amp; Receive</span>
           </button>
         </div>
       </div>

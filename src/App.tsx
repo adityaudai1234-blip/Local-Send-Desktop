@@ -6,6 +6,7 @@ import { Devices } from './pages/Devices';
 import { TrustedDevices } from './pages/TrustedDevices';
 import { Transfers } from './pages/Transfers';
 import { History } from './pages/History';
+import { Analytics } from './pages/Analytics';
 import { Settings } from './pages/Settings';
 import { useDeviceStore } from './stores/deviceStore';
 import { useSettingsStore } from './stores/settingsStore';
@@ -16,6 +17,7 @@ import { ManualAddModal } from './components/devices/ManualAddModal';
 import { PairingModal } from './components/pairing/PairingModal';
 import { QrScannerModal } from './components/pairing/QrScannerModal';
 import { PairingRequestModal } from './components/pairing/PairingRequestModal';
+import { tauriBridge } from './services/tauriBridge';
 import { AlertCircle, CheckCircle2, Info, X, ShieldAlert } from 'lucide-react';
 
 export default function App() {
@@ -35,6 +37,19 @@ export default function App() {
     initPairing();
     initConnection();
     initTransfer();
+
+    let unlistenNav: (() => void) | undefined;
+    tauriBridge
+      .subscribeEvent<string>('navigate-tab', (tab) => {
+        if (tab) setCurrentTab(tab);
+      })
+      .then((fn) => {
+        unlistenNav = fn;
+      });
+
+    return () => {
+      if (unlistenNav) unlistenNav();
+    };
   }, [initDevice, initPairing, initConnection, initTransfer]);
 
   const getPageTitle = () => {
@@ -46,11 +61,13 @@ export default function App() {
       case 'trusted':
         return { title: 'Trusted Devices', subtitle: 'Manage persistent Ed25519 pairing relationships' };
       case 'transfers':
-        return { title: 'Active Transfers', subtitle: 'Real-time transmission queue' };
+        return { title: 'Active Transfers', subtitle: 'Priority queue, background sharing, and recovery' };
       case 'history':
-        return { title: 'Transfer History', subtitle: 'Historical logs and file records' };
+        return { title: 'Transfer History', subtitle: 'Persistent SQLite logs, search, and inspection' };
+      case 'analytics':
+        return { title: 'Analytics & Insights', subtitle: 'Local transfer volume, speeds, and top peers' };
       case 'settings':
-        return { title: 'Settings', subtitle: 'Identity, theme, and network preferences' };
+        return { title: 'Settings', subtitle: 'Identity, notifications, tray, and network preferences' };
       default:
         return { title: 'BeamDrop', subtitle: 'Local file sharing' };
     }
@@ -141,6 +158,7 @@ export default function App() {
           )}
           {currentTab === 'transfers' && <Transfers />}
           {currentTab === 'history' && <History />}
+          {currentTab === 'analytics' && <Analytics />}
           {currentTab === 'settings' && <Settings />}
         </main>
       </div>

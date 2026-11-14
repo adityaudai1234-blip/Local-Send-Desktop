@@ -2,12 +2,21 @@ import { invoke } from '@tauri-apps/api/core';
 import { listen, UnlistenFn } from '@tauri-apps/api/event';
 import { DiscoveredDevice, DiscoveryState, LocalDeviceInfo, NetworkInterfaceInfo } from '../types/device';
 import { PairingRequest, PairingResponse, PairingSession, QrPayload, TrustedDevice } from '../types/pairing';
-import { PeerConnection, NetworkInformation, NetworkStatistics, ConnectionState } from '../types/networking';
+import { PeerConnection, NetworkInformation, NetworkStatistics } from '../types/networking';
 import {
-  SelectedFileItem,
-  TransferSession,
-  TransferProgressPayload,
+  BackgroundTransferStatus,
+  DailyVolumeStat,
+  FolderFileEntry,
+  FolderMetadata,
+  HistoryFilterOptions,
   IncomingTransferProposal,
+  QueueItemInfo,
+  RecoverableTransferInfo,
+  SelectedFileItem,
+  TopDeviceStat,
+  TransferPriority,
+  TransferSession,
+  TransferStatistics,
 } from '../types/transfer';
 
 // Detect if running inside Tauri 2 native desktop webview
@@ -19,6 +28,9 @@ export const isTauriEnvironment = (): boolean => {
 const LOCAL_STORAGE_DEVICE_KEY = 'beamdrop_local_device';
 const LOCAL_STORAGE_PEERS_KEY = 'beamdrop_discovered_peers';
 const LOCAL_STORAGE_TRUSTED_KEY = 'beamdrop_trusted_devices';
+const LOCAL_STORAGE_SESSIONS_KEY = 'beamdrop_phase5_sessions';
+const LOCAL_STORAGE_DOWNLOAD_DIR_KEY = 'beamdrop_download_dir';
+const LOCAL_STORAGE_NOTIF_KEY = 'beamdrop_notifications_enabled';
 
 function getInitialWebDevice(): LocalDeviceInfo {
   if (typeof window === 'undefined') {
@@ -77,13 +89,167 @@ function getInitialWebDevice(): LocalDeviceInfo {
   return initial;
 }
 
+function getDefaultWebSessions(): TransferSession[] {
+  const now = Date.now();
+  const localDev = getInitialWebDevice();
+  return [
+    {
+      transferId: 'tx-hist-101',
+      direction: 'outgoing',
+      senderDeviceId: localDev.id,
+      senderDeviceName: localDev.name,
+      senderPlatform: localDev.platform,
+      recipientDeviceId: 'peer-pix8-9a3b',
+      recipientDeviceName: "Aditya's Pixel 8",
+      recipientIp: '192.168.1.142',
+      recipientPort: 53317,
+      isFolder: true,
+      rootFolderName: 'Design_Assets_2026',
+      priority: 'high',
+      files: [
+        {
+          fileId: 'f-101-1',
+          name: 'logo.svg',
+          relativePath: 'Design_Assets_2026/branding/logo.svg',
+          size: 1450000,
+          mimeType: 'image/svg+xml',
+          isDirectory: false,
+          isVerified: true,
+          bytesTransferred: 1450000,
+          status: 'completed',
+          sha256Checksum: '7c4a8d09ca3762af61e59520943dc26494f8941b',
+        },
+        {
+          fileId: 'f-101-2',
+          name: 'ui_spec_v4.pdf',
+          relativePath: 'Design_Assets_2026/docs/ui_spec_v4.pdf',
+          size: 48200000,
+          mimeType: 'application/pdf',
+          isDirectory: false,
+          isVerified: true,
+          bytesTransferred: 48200000,
+          status: 'completed',
+          sha256Checksum: 'a94a8fe5ccb19ba61c4c0873d391e987982fbbd3',
+        },
+      ],
+      totalBytes: 49650000,
+      bytesTransferred: 49650000,
+      speedBytesPerSec: 19200000,
+      status: 'completed',
+      startedAt: now - 1000 * 3600 * 4,
+      completedAt: now - 1000 * 3600 * 4 + 3200,
+      destinationDirectory: '~/Downloads/BeamDrop',
+    },
+    {
+      transferId: 'tx-hist-102',
+      direction: 'incoming',
+      senderDeviceId: 'peer-mac-studio-41c',
+      senderDeviceName: 'Studio Mac M3 Max',
+      senderPlatform: 'macos',
+      recipientDeviceId: localDev.id,
+      recipientDeviceName: localDev.name,
+      recipientIp: '192.168.1.180',
+      recipientPort: 53317,
+      isFolder: false,
+      priority: 'normal',
+      files: [
+        {
+          fileId: 'f-102-1',
+          name: 'Architecture_Plan_v3.pdf',
+          size: 24500000,
+          mimeType: 'application/pdf',
+          isDirectory: false,
+          isVerified: true,
+          bytesTransferred: 24500000,
+          status: 'completed',
+          sha256Checksum: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4',
+        },
+      ],
+      totalBytes: 24500000,
+      bytesTransferred: 24500000,
+      speedBytesPerSec: 22400000,
+      status: 'completed',
+      startedAt: now - 1000 * 3600 * 26,
+      completedAt: now - 1000 * 3600 * 26 + 1500,
+      destinationDirectory: '~/Downloads/BeamDrop',
+    },
+    {
+      transferId: 'tx-hist-103',
+      direction: 'outgoing',
+      senderDeviceId: localDev.id,
+      senderDeviceName: localDev.name,
+      senderPlatform: localDev.platform,
+      recipientDeviceId: 'peer-thinkpad-x1',
+      recipientDeviceName: 'ThinkPad Workstation',
+      recipientIp: '192.168.1.199',
+      recipientPort: 53317,
+      isFolder: false,
+      priority: 'low',
+      files: [
+        {
+          fileId: 'f-103-1',
+          name: 'build_artifacts.tar.gz',
+          size: 158000000,
+          mimeType: 'application/gzip',
+          isDirectory: false,
+          isVerified: false,
+          bytesTransferred: 62000000,
+          status: 'failed',
+        },
+      ],
+      totalBytes: 158000000,
+      bytesTransferred: 62000000,
+      speedBytesPerSec: 0,
+      status: 'failed',
+      errorCode: 'ERR_PEER_DISCONNECTED',
+      errorMessage: 'Peer closed TCP socket before final verification packet',
+      startedAt: now - 1000 * 3600 * 50,
+      completedAt: now - 1000 * 3600 * 50 + 4800,
+      destinationDirectory: '~/Downloads/BeamDrop',
+    },
+  ];
+}
+
+function loadWebSessions(): TransferSession[] {
+  if (typeof window === 'undefined') return [];
+  const stored = localStorage.getItem(LOCAL_STORAGE_SESSIONS_KEY);
+  if (stored) {
+    try {
+      const parsed = JSON.parse(stored);
+      if (Array.isArray(parsed)) return parsed;
+    } catch {
+      // ignore
+    }
+  }
+  const defaults = getDefaultWebSessions();
+  localStorage.setItem(LOCAL_STORAGE_SESSIONS_KEY, JSON.stringify(defaults));
+  return defaults;
+}
+
+function saveWebSessions(sessions: TransferSession[]) {
+  if (typeof window !== 'undefined') {
+    localStorage.setItem(LOCAL_STORAGE_SESSIONS_KEY, JSON.stringify(sessions));
+  }
+}
+
+function upsertWebSession(session: TransferSession) {
+  const all = loadWebSessions();
+  const idx = all.findIndex(s => s.transferId === session.transferId);
+  if (idx >= 0) {
+    all[idx] = session;
+  } else {
+    all.unshift(session);
+  }
+  saveWebSessions(all);
+}
+
 // In-memory web fallback discovery and pairing state
 let webDiscoveryActive = true;
-let webSubscribers: Record<string, ((payload: unknown) => void)[]> = {};
+const webSubscribers: Record<string, ((payload: unknown) => void)[]> = {};
 let activeWebSession: PairingSession | null = null;
 let pendingWebRequests: PairingRequest[] = [];
 let webNetworkRunning = true;
-let webConnections: Record<string, PeerConnection> = {
+const webConnections: Record<string, PeerConnection> = {
   'peer-pix8-9a3b': {
     deviceId: 'peer-pix8-9a3b',
     deviceName: "Aditya's Pixel 8",
@@ -101,17 +267,34 @@ let webConnections: Record<string, PeerConnection> = {
   },
 };
 let webTxBytes = 450210;
-let webRxBytes = 128450;
+const webRxBytes = 128450;
 let webMessagesSent = 84;
-let webMessagesReceived = 42;
-let webStatsStartTime = Date.now() - 7200000;
+const webMessagesReceived = 42;
+const webStatsStartTime = Date.now() - 7200000;
 
 // Web Transfer Fallback State
 let webSelectedFiles: SelectedFileItem[] = [];
-let webActiveTransfers: Record<string, TransferSession> = {};
-let webDownloadDirectory = '~/Downloads/BeamDrop';
+let webSelectedFolders: FolderMetadata[] = [];
+const webActiveTransfers: Record<string, TransferSession> = {};
+const webTransferTimers: Record<string, number> = {};
 let webPendingIncomingTransfers: IncomingTransferProposal[] = [];
-let webTransferTimer: number | null = null;
+
+function getPriorityWeight(p?: TransferPriority): number {
+  if (p === 'high') return 3;
+  if (p === 'low') return 1;
+  return 2;
+}
+
+function getWebDownloadDir(): string {
+  if (typeof window === 'undefined') return '~/Downloads/BeamDrop';
+  return localStorage.getItem(LOCAL_STORAGE_DOWNLOAD_DIR_KEY) || '~/Downloads/BeamDrop';
+}
+
+function getWebNotificationsEnabled(): boolean {
+  if (typeof window === 'undefined') return true;
+  const val = localStorage.getItem(LOCAL_STORAGE_NOTIF_KEY);
+  return val === null ? true : val === 'true';
+}
 
 export const tauriBridge = {
   isNative: isTauriEnvironment,
@@ -131,7 +314,7 @@ export const tauriBridge = {
     const current = getInitialWebDevice();
     current.name = newName.trim();
     localStorage.setItem(LOCAL_STORAGE_DEVICE_KEY, JSON.stringify(current));
-    
+
     this.emitWebEvent('discovery:state-changed', {
       isActive: webDiscoveryActive,
       serviceType: '_beamdrop._tcp.local.',
@@ -316,7 +499,7 @@ export const tauriBridge = {
       fingerprint: 'E3:4A:9C:12:8F:05:BD:7E',
       verificationCode: '481920',
       createdAt: now,
-      expiresAt: now + (300 * 1000), // 5 minutes
+      expiresAt: now + 300 * 1000,
       isActive: true,
     };
 
@@ -471,7 +654,6 @@ export const tauriBridge = {
       }
     }
 
-    // Default trusted companion devices (e.g. Android phone and Mac workstation)
     const defaults: TrustedDevice[] = [
       {
         deviceId: 'peer-pix8-9a3b',
@@ -483,7 +665,7 @@ export const tauriBridge = {
         publicKey: 'f9024c084656ec5688a44d858cf09f25752c00222f7743d78c005b766861614e',
         fingerprint: '9A:14:8B:D3:52:FC:31:01',
         authTokenHash: 'hash_android_sec_token_9a',
-        firstPairedAt: Date.now() - 86400000 * 3, // 3 days ago
+        firstPairedAt: Date.now() - 86400000 * 3,
         lastConnectedAt: Date.now() - 15000,
         isOnline: true,
         trustStatus: 'trusted',
@@ -498,7 +680,7 @@ export const tauriBridge = {
         publicKey: '2e89fa2110c9a4b37d8011234909ffaa5b642e12908f029a1b18237c00192a01',
         fingerprint: '41:C8:E9:0B:AA:23:D1:77',
         authTokenHash: 'hash_mac_studio_token_41',
-        firstPairedAt: Date.now() - 86400000 * 7, // 7 days ago
+        firstPairedAt: Date.now() - 86400000 * 7,
         lastConnectedAt: Date.now() - 32000,
         isOnline: true,
         trustStatus: 'trusted',
@@ -547,9 +729,7 @@ export const tauriBridge = {
     return true;
   },
 
-  // Helper to simulate an incoming pairing request for interactive browser preview testing
   simulateIncomingPairing(name = "Aditya's Pixel 8", platform: LocalDeviceInfo['platform'] = 'android'): PairingRequest {
-    const dev = getInitialWebDevice();
     const request: PairingRequest = {
       requestId: 'sim-req-' + Math.random().toString(36).substring(2, 9),
       sessionId: activeWebSession ? activeWebSession.sessionId : 'sess-preview',
@@ -615,7 +795,6 @@ export const tauriBridge = {
       });
     }
 
-    // Web preview simulation
     if (!webNetworkRunning) {
       throw new Error('Network communication service is stopped.');
     }
@@ -639,7 +818,6 @@ export const tauriBridge = {
     webConnections[deviceId] = conn;
     this.emitWebEvent('connection-status-changed', conn);
 
-    // Asynchronous simulated handshake: connecting -> authenticating -> connected
     setTimeout(() => {
       conn.state = 'authenticating';
       this.emitWebEvent('connection-status-changed', conn);
@@ -648,11 +826,9 @@ export const tauriBridge = {
         conn.state = 'connected';
         conn.connectedAt = Date.now();
         conn.lastHeartbeat = Date.now();
-        conn.latencyMs = Math.floor(Math.random() * 5) + 2; // 2ms - 6ms LAN
+        conn.latencyMs = Math.floor(Math.random() * 5) + 2;
         webTxBytes += 1024;
-        webRxBytes += 512;
         webMessagesSent += 1;
-        webMessagesReceived += 1;
         this.emitWebEvent('device-connected', conn);
         this.emitWebEvent('connection-status-changed', conn);
       }, 350);
@@ -749,7 +925,6 @@ export const tauriBridge = {
       return conn;
     }
 
-    // If not found in memory, try to find in trusted devices
     const trusted = await this.getTrustedDevices();
     const target = trusted.find(d => d.deviceId === deviceId);
     if (!target) {
@@ -793,24 +968,26 @@ export const tauriBridge = {
     };
   },
 
-  // --- Phase 4 File Transfer APIs ---
+  // -------------------------------------------------------------
+  // PHASE 4 & PHASE 5: File & Folder Selection & Transfer APIs
+  // -------------------------------------------------------------
 
   async selectFiles(filePaths: string[]): Promise<SelectedFileItem[]> {
     if (isTauriEnvironment()) {
       return await invoke<SelectedFileItem[]>('select_files', { filePaths });
     }
 
-    const newItems: SelectedFileItem[] = filePaths.map((p) => {
+    const newItems: SelectedFileItem[] = filePaths.map(p => {
       const name = p.split('/').pop() || p.split('\\').pop() || p;
       const ext = name.includes('.') ? name.split('.').pop()?.toLowerCase() || '' : '';
       return {
         id: 'f-' + Math.random().toString(36).substring(2, 9),
         name,
         extension: ext,
-        size: Math.floor(Math.random() * 85000000) + 1048576, // 1MB - 86MB mock size
+        size: 4096 * 1024,
         mimeType: ext === 'pdf' ? 'application/pdf' : ext === 'mp4' ? 'video/mp4' : 'application/octet-stream',
         path: p,
-        lastModified: Date.now() - 3600000,
+        lastModified: Date.now(),
       };
     });
 
@@ -829,7 +1006,9 @@ export const tauriBridge = {
       path: file.path || `~/Documents/${file.name}`,
       lastModified: Date.now(),
     };
-    webSelectedFiles = [...webSelectedFiles, item];
+    if (!webSelectedFiles.some(f => f.name === item.name && f.size === item.size)) {
+      webSelectedFiles = [...webSelectedFiles, item];
+    }
     return webSelectedFiles;
   },
 
@@ -856,26 +1035,194 @@ export const tauriBridge = {
     webSelectedFiles = [];
   },
 
+  // --- Phase 5: Folder Selection & Metadata ---
+
+  async selectFolder(folderPath: string): Promise<FolderMetadata[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<FolderMetadata[]>('select_folder', { folderPath });
+    }
+    const cleanName = folderPath.split('/').filter(Boolean).pop() || 'Shared_Folder';
+    const meta: FolderMetadata = {
+      folderName: cleanName,
+      rootPath: folderPath,
+      totalFiles: 1,
+      totalFolders: 1,
+      totalBytes: 1024 * 512,
+      files: [
+        {
+          id: 'ff-' + Math.random().toString(36).substring(2, 9),
+          name: 'manifest.json',
+          relativePath: `${cleanName}/manifest.json`,
+          fullPath: `${folderPath}/manifest.json`,
+          size: 1024 * 512,
+          mimeType: 'application/json',
+          isDirectory: false,
+          lastModified: Date.now(),
+        },
+      ],
+    };
+    if (!webSelectedFolders.some(f => f.rootPath === meta.rootPath)) {
+      webSelectedFolders = [...webSelectedFolders, meta];
+    }
+    return webSelectedFolders;
+  },
+
+  async addScannedBrowserFolder(metadata: FolderMetadata): Promise<FolderMetadata[]> {
+    if (!webSelectedFolders.some(f => f.rootPath === metadata.rootPath)) {
+      webSelectedFolders = [...webSelectedFolders, metadata];
+    } else {
+      webSelectedFolders = webSelectedFolders.map(f => (f.rootPath === metadata.rootPath ? metadata : f));
+    }
+    return webSelectedFolders;
+  },
+
+  async getSelectedFolders(): Promise<FolderMetadata[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<FolderMetadata[]>('get_selected_folders');
+    }
+    return webSelectedFolders;
+  },
+
+  async removeSelectedFolder(rootPath: string): Promise<FolderMetadata[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<FolderMetadata[]>('remove_selected_folder', { rootPath });
+    }
+    webSelectedFolders = webSelectedFolders.filter(f => f.rootPath !== rootPath);
+    return webSelectedFolders;
+  },
+
+  async clearSelectedFolders(): Promise<void> {
+    if (isTauriEnvironment()) {
+      await invoke('clear_selected_folders');
+      return;
+    }
+    webSelectedFolders = [];
+  },
+
+  async scanFolder(folderPath: string): Promise<FolderMetadata> {
+    if (isTauriEnvironment()) {
+      return await invoke<FolderMetadata>('scan_folder', { folderPath });
+    }
+    const cleanName = folderPath.split('/').filter(Boolean).pop() || 'Folder';
+    return {
+      folderName: cleanName,
+      rootPath: folderPath,
+      totalFiles: 0,
+      totalFolders: 1,
+      totalBytes: 0,
+      files: [],
+    };
+  },
+
   async getDownloadDirectory(): Promise<string> {
     if (isTauriEnvironment()) {
       return await invoke<string>('get_download_directory');
     }
-    return webDownloadDirectory;
+    return getWebDownloadDir();
   },
 
   async setDownloadDirectory(path: string): Promise<string> {
     if (isTauriEnvironment()) {
       return await invoke<string>('set_download_directory', { path });
     }
-    webDownloadDirectory = path;
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_DOWNLOAD_DIR_KEY, path);
+    }
     return path;
   },
 
   async openReceivedFileLocation(path: string): Promise<boolean> {
+    return this.revealReceivedFile(path);
+  },
+
+  async openReceivedFile(path: string): Promise<boolean> {
     if (isTauriEnvironment()) {
-      return await invoke<boolean>('open_received_file_location', { path });
+      return await invoke<boolean>('open_received_file', { path });
     }
     return true;
+  },
+
+  async revealReceivedFile(path: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('reveal_received_file', { path });
+    }
+    return true;
+  },
+
+  async copyFilePath(path: string): Promise<string> {
+    if (isTauriEnvironment()) {
+      return await invoke<string>('copy_file_path', { path });
+    }
+    if (typeof navigator !== 'undefined' && navigator.clipboard) {
+      await navigator.clipboard.writeText(path).catch(() => undefined);
+    }
+    return path;
+  },
+
+  _runWebTransferSimulation(session: TransferSession) {
+    webActiveTransfers[session.transferId] = session;
+    upsertWebSession(session);
+
+    const totalBytes = Math.max(session.totalBytes, 1024);
+    if (webTransferTimers[session.transferId]) {
+      clearInterval(webTransferTimers[session.transferId]);
+    }
+
+    const interval = window.setInterval(() => {
+      const current = webActiveTransfers[session.transferId];
+      if (!current) {
+        clearInterval(interval);
+        return;
+      }
+      if (current.status === 'paused' || current.status === 'cancelled' || current.status === 'failed') {
+        if (current.status !== 'paused') {
+          clearInterval(interval);
+        }
+        return;
+      }
+
+      const step = Math.max(Math.round(totalBytes / 10), 1_500_000);
+      current.bytesTransferred = Math.min(totalBytes, current.bytesTransferred + step);
+      current.speedBytesPerSec = current.priority === 'high' ? 26_500_000 : current.priority === 'low' ? 8_400_000 : 18_500_000;
+
+      if (current.bytesTransferred >= totalBytes) {
+        clearInterval(interval);
+        delete webTransferTimers[session.transferId];
+        current.status = 'completed';
+        current.bytesTransferred = session.totalBytes;
+        current.completedAt = Date.now();
+        current.speedBytesPerSec = 0;
+        current.estimatedSecondsRemaining = 0;
+        current.files = current.files.map(f => ({
+          ...f,
+          bytesTransferred: f.size,
+          isVerified: true,
+          status: 'completed',
+          sha256Checksum: f.sha256Checksum || 'sha256_' + Math.random().toString(16).slice(2, 18),
+        }));
+        upsertWebSession(current);
+        this.emitWebEvent('transfer-completed', current);
+      } else {
+        const remaining = totalBytes - current.bytesTransferred;
+        current.estimatedSecondsRemaining = Math.max(1, Math.ceil(remaining / current.speedBytesPerSec));
+        upsertWebSession(current);
+        this.emitWebEvent('transfer-progress', {
+          transferId: current.transferId,
+          fileId: current.files[0]?.fileId || 'f1',
+          fileName: current.files[0]?.name || current.rootFolderName || 'transfer.bin',
+          currentFileIndex: 1,
+          totalFiles: current.files.length,
+          bytesTransferred: current.bytesTransferred,
+          totalBytes: session.totalBytes,
+          percentage: Math.min(100, Math.round((current.bytesTransferred / totalBytes) * 100)),
+          speedBytesPerSec: current.speedBytesPerSec,
+          estimatedSecondsRemaining: current.estimatedSecondsRemaining,
+          status: 'transferring',
+        });
+      }
+    }, 260);
+
+    webTransferTimers[session.transferId] = interval;
   },
 
   async startFileTransfer(params: {
@@ -884,6 +1231,7 @@ export const tauriBridge = {
     recipientIp: string;
     recipientPort?: number;
     fileIds?: string[];
+    priority?: TransferPriority;
   }): Promise<TransferSession> {
     if (isTauriEnvironment()) {
       return await invoke<TransferSession>('start_file_transfer', {
@@ -892,6 +1240,7 @@ export const tauriBridge = {
         recipientIp: params.recipientIp,
         recipientPort: params.recipientPort || 53317,
         fileIds: params.fileIds,
+        priority: params.priority,
       });
     }
 
@@ -900,8 +1249,13 @@ export const tauriBridge = {
       ? webSelectedFiles.filter(f => params.fileIds?.includes(f.id))
       : webSelectedFiles;
 
+    if (filesToSend.length === 0) {
+      throw new Error('No files selected for transfer');
+    }
+
     const totalBytes = filesToSend.reduce((acc, f) => acc + f.size, 0);
     const transferId = 'tx-' + Math.random().toString(36).substring(2, 9);
+    const priority = params.priority || 'normal';
 
     const session: TransferSession = {
       transferId,
@@ -913,12 +1267,15 @@ export const tauriBridge = {
       recipientDeviceName: params.recipientName,
       recipientIp: params.recipientIp,
       recipientPort: params.recipientPort || 53317,
+      priority,
+      isFolder: false,
       files: filesToSend.map(f => ({
         fileId: f.id,
         name: f.name,
         size: f.size,
         mimeType: f.mimeType,
         path: f.path,
+        isDirectory: false,
         isVerified: false,
         bytesTransferred: 0,
         status: 'transferring',
@@ -926,46 +1283,89 @@ export const tauriBridge = {
       totalBytes,
       bytesTransferred: 0,
       speedBytesPerSec: 18500000,
-      estimatedSecondsRemaining: Math.ceil(totalBytes / 18500000),
+      estimatedSecondsRemaining: Math.max(1, Math.ceil(totalBytes / 18500000)),
       status: 'transferring',
       startedAt: Date.now(),
-      destinationDirectory: webDownloadDirectory,
+      destinationDirectory: getWebDownloadDir(),
     };
 
-    webActiveTransfers[transferId] = session;
+    this._runWebTransferSimulation(session);
+    return session;
+  },
 
-    // Simulate real streaming chunks in web preview
-    let currentBytes = 0;
-    const interval = setInterval(() => {
-      currentBytes += 3500000;
-      if (currentBytes >= totalBytes) {
-        currentBytes = totalBytes;
-        clearInterval(interval);
-        session.status = 'completed';
-        session.bytesTransferred = totalBytes;
-        session.completedAt = Date.now();
-        session.speedBytesPerSec = 0;
-        this.emitWebEvent('transfer-completed', session);
-      } else {
-        session.bytesTransferred = currentBytes;
-        const remaining = totalBytes - currentBytes;
-        session.estimatedSecondsRemaining = Math.max(1, Math.ceil(remaining / session.speedBytesPerSec));
-        this.emitWebEvent('transfer-progress', {
-          transferId,
-          fileId: session.files[0]?.fileId || 'f1',
-          fileName: session.files[0]?.name || 'transfer.bin',
-          currentFileIndex: 1,
-          totalFiles: session.files.length,
-          bytesTransferred: currentBytes,
-          totalBytes,
-          percentage: Math.round((currentBytes / totalBytes) * 100),
-          speedBytesPerSec: session.speedBytesPerSec,
-          estimatedSecondsRemaining: session.estimatedSecondsRemaining,
-          status: 'transferring',
-        });
-      }
-    }, 250);
+  async startFolderTransfer(params: {
+    recipientId: string;
+    recipientName: string;
+    recipientIp: string;
+    recipientPort?: number;
+    folderPaths?: string[];
+    priority?: TransferPriority;
+  }): Promise<TransferSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession>('start_folder_transfer', {
+        recipientId: params.recipientId,
+        recipientName: params.recipientName,
+        recipientIp: params.recipientIp,
+        recipientPort: params.recipientPort || 53317,
+        folderPaths: params.folderPaths,
+        priority: params.priority,
+      });
+    }
 
+    const localDev = getInitialWebDevice();
+    const foldersToSend = params.folderPaths
+      ? webSelectedFolders.filter(f => params.folderPaths?.includes(f.rootPath))
+      : webSelectedFolders;
+
+    if (foldersToSend.length === 0) {
+      throw new Error('No folders selected for transfer');
+    }
+
+    const rootFolderName =
+      foldersToSend.length === 1
+        ? foldersToSend[0].folderName
+        : `${foldersToSend.length} folders`;
+
+    const allEntries: FolderFileEntry[] = foldersToSend.flatMap(f => f.files);
+    const totalBytes = foldersToSend.reduce((acc, f) => acc + f.totalBytes, 0);
+    const transferId = 'tx-fld-' + Math.random().toString(36).substring(2, 9);
+    const priority = params.priority || 'normal';
+
+    const session: TransferSession = {
+      transferId,
+      direction: 'outgoing',
+      senderDeviceId: localDev.id,
+      senderDeviceName: localDev.name,
+      senderPlatform: localDev.platform,
+      recipientDeviceId: params.recipientId,
+      recipientDeviceName: params.recipientName,
+      recipientIp: params.recipientIp,
+      recipientPort: params.recipientPort || 53317,
+      priority,
+      isFolder: true,
+      rootFolderName,
+      files: allEntries.map(entry => ({
+        fileId: entry.id,
+        name: entry.name,
+        relativePath: entry.relativePath,
+        path: entry.fullPath,
+        size: entry.size,
+        mimeType: entry.mimeType,
+        isDirectory: entry.isDirectory,
+        isVerified: false,
+        bytesTransferred: 0,
+        status: 'transferring',
+      })),
+      totalBytes,
+      bytesTransferred: 0,
+      speedBytesPerSec: 19500000,
+      estimatedSecondsRemaining: Math.max(1, Math.ceil(totalBytes / 19500000)),
+      status: 'transferring',
+      startedAt: Date.now(),
+      destinationDirectory: getWebDownloadDir(),
+    };
+
+    this._runWebTransferSimulation(session);
     return session;
   },
 
@@ -986,25 +1386,33 @@ export const tauriBridge = {
       recipientDeviceName: localDev.name,
       recipientIp: localDev.ipAddresses[0] || '192.168.1.105',
       recipientPort: localDev.port,
-      files: pending?.files.map(f => ({
-        fileId: f.fileId,
-        name: f.fileName,
-        size: f.fileSize,
-        mimeType: f.mimeType,
-        isVerified: true,
-        bytesTransferred: f.fileSize,
-        status: 'completed',
-      })) || [],
+      priority: pending?.priority || 'normal',
+      isFolder: pending?.isFolder || false,
+      rootFolderName: pending?.rootFolderName,
+      files:
+        pending?.files.map(f => ({
+          fileId: f.fileId,
+          name: f.fileName,
+          relativePath: f.relativePath,
+          isDirectory: f.isDirectory || false,
+          size: f.fileSize,
+          mimeType: f.mimeType,
+          isVerified: true,
+          bytesTransferred: f.fileSize,
+          status: 'completed',
+          sha256Checksum: 'sha256_' + Math.random().toString(16).slice(2, 18),
+        })) || [],
       totalBytes: pending?.totalBytes || 10485760,
       bytesTransferred: pending?.totalBytes || 10485760,
       speedBytesPerSec: 0,
       status: 'completed',
-      startedAt: Date.now() - 3000,
+      startedAt: Date.now() - 2500,
       completedAt: Date.now(),
-      destinationDirectory: webDownloadDirectory,
+      destinationDirectory: getWebDownloadDir(),
     };
 
     webActiveTransfers[transferId] = session;
+    upsertWebSession(session);
     webPendingIncomingTransfers = webPendingIncomingTransfers.filter(p => p.transferId !== transferId);
     this.emitWebEvent('transfer-completed', session);
     return session;
@@ -1028,6 +1436,7 @@ export const tauriBridge = {
     if (webActiveTransfers[transferId]) {
       webActiveTransfers[transferId].status = 'paused';
       webActiveTransfers[transferId].speedBytesPerSec = 0;
+      upsertWebSession(webActiveTransfers[transferId]);
       this.emitWebEvent('transfer-updated', webActiveTransfers[transferId]);
     }
     return true;
@@ -1041,6 +1450,7 @@ export const tauriBridge = {
     if (webActiveTransfers[transferId]) {
       webActiveTransfers[transferId].status = 'transferring';
       webActiveTransfers[transferId].speedBytesPerSec = 15200000;
+      upsertWebSession(webActiveTransfers[transferId]);
       this.emitWebEvent('transfer-updated', webActiveTransfers[transferId]);
     }
     return true;
@@ -1054,6 +1464,8 @@ export const tauriBridge = {
     if (webActiveTransfers[transferId]) {
       webActiveTransfers[transferId].status = 'cancelled';
       webActiveTransfers[transferId].speedBytesPerSec = 0;
+      webActiveTransfers[transferId].completedAt = Date.now();
+      upsertWebSession(webActiveTransfers[transferId]);
       this.emitWebEvent('transfer-cancelled', webActiveTransfers[transferId]);
     }
     return true;
@@ -1065,7 +1477,43 @@ export const tauriBridge = {
     }
     const count = Object.keys(webActiveTransfers).length;
     Object.values(webActiveTransfers).forEach(s => {
-      s.status = 'cancelled';
+      if (s.status === 'transferring' || s.status === 'paused' || s.status === 'queued' || s.status === 'waiting_for_approval') {
+        s.status = 'cancelled';
+        s.speedBytesPerSec = 0;
+        upsertWebSession(s);
+      }
+    });
+    return count;
+  },
+
+  async pauseAllTransfers(): Promise<number> {
+    if (isTauriEnvironment()) {
+      return await invoke<number>('pause_all_transfers');
+    }
+    let count = 0;
+    Object.values(webActiveTransfers).forEach(s => {
+      if (s.status === 'transferring' || s.status === 'queued' || s.status === 'preparing') {
+        s.status = 'paused';
+        s.speedBytesPerSec = 0;
+        upsertWebSession(s);
+        count++;
+      }
+    });
+    return count;
+  },
+
+  async resumeAllTransfers(): Promise<number> {
+    if (isTauriEnvironment()) {
+      return await invoke<number>('resume_all_transfers');
+    }
+    let count = 0;
+    Object.values(webActiveTransfers).forEach(s => {
+      if (s.status === 'paused') {
+        s.status = 'transferring';
+        s.speedBytesPerSec = 16400000;
+        upsertWebSession(s);
+        count++;
+      }
     });
     return count;
   },
@@ -1081,7 +1529,372 @@ export const tauriBridge = {
     if (isTauriEnvironment()) {
       return await invoke<TransferSession | null>('get_transfer_details', { transferId });
     }
-    return webActiveTransfers[transferId] || null;
+    if (webActiveTransfers[transferId]) return webActiveTransfers[transferId];
+    return loadWebSessions().find(s => s.transferId === transferId) || null;
+  },
+
+  // --- Phase 5: Queue, Priority, Retry, Removal ---
+
+  async getTransferQueue(): Promise<QueueItemInfo[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<QueueItemInfo[]>('get_transfer_queue');
+    }
+    const items = Object.values(webActiveTransfers)
+      .filter(s => ['queued', 'transferring', 'paused', 'waiting_for_approval', 'preparing'].includes(s.status))
+      .sort((a, b) => {
+        const pw = getPriorityWeight(b.priority) - getPriorityWeight(a.priority);
+        return pw !== 0 ? pw : a.startedAt - b.startedAt;
+      });
+    return items.map((s, idx) => ({
+      transferId: s.transferId,
+      rootName: s.rootFolderName || s.files[0]?.name || 'Transfer',
+      priority: s.priority || 'normal',
+      queuePosition: idx + 1,
+      status: s.status,
+      recipientName: s.recipientDeviceName,
+      totalBytes: s.totalBytes,
+      bytesTransferred: s.bytesTransferred,
+      speedBytesPerSec: s.speedBytesPerSec,
+      isFolder: Boolean(s.isFolder),
+      fileCount: s.files.length,
+      enqueuedAt: s.startedAt,
+    }));
+  },
+
+  async changeTransferPriority(transferId: string, priority: TransferPriority): Promise<number> {
+    if (isTauriEnvironment()) {
+      return await invoke<number>('change_transfer_priority', { transferId, priority });
+    }
+    if (webActiveTransfers[transferId]) {
+      webActiveTransfers[transferId].priority = priority;
+      upsertWebSession(webActiveTransfers[transferId]);
+      this.emitWebEvent('transfer-updated', webActiveTransfers[transferId]);
+    }
+    const queue = await this.getTransferQueue();
+    const pos = queue.findIndex(q => q.transferId === transferId);
+    return pos >= 0 ? pos + 1 : 1;
+  },
+
+  async retryTransfer(transferId: string): Promise<TransferSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession>('retry_transfer', { transferId });
+    }
+    const old = await this.getTransferDetails(transferId);
+    if (!old) {
+      throw new Error(`Transfer ${transferId} not found`);
+    }
+    const newId = 'tx-' + Math.random().toString(36).substring(2, 9);
+    const retried: TransferSession = {
+      ...old,
+      transferId: newId,
+      direction: 'outgoing',
+      bytesTransferred: 0,
+      speedBytesPerSec: 17500000,
+      status: 'transferring',
+      errorMessage: undefined,
+      errorCode: undefined,
+      startedAt: Date.now(),
+      completedAt: undefined,
+      files: old.files.map(f => ({
+        ...f,
+        fileId: 'f-' + Math.random().toString(36).substring(2, 8),
+        bytesTransferred: 0,
+        isVerified: false,
+        status: 'transferring',
+      })),
+    };
+    this._runWebTransferSimulation(retried);
+    return retried;
+  },
+
+  async removeTransfer(transferId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('remove_transfer', { transferId });
+    }
+    if (webTransferTimers[transferId]) {
+      clearInterval(webTransferTimers[transferId]);
+      delete webTransferTimers[transferId];
+    }
+    delete webActiveTransfers[transferId];
+    return true;
+  },
+
+  // --- Phase 5: Persistent History ---
+
+  async getTransferHistory(options?: HistoryFilterOptions): Promise<TransferSession[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession[]>('get_transfer_history', { options });
+    }
+    return this.filterTransferHistory(options || {});
+  },
+
+  async searchTransferHistory(query: string): Promise<TransferSession[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession[]>('search_transfer_history', { query });
+    }
+    return this.filterTransferHistory({ searchQuery: query });
+  },
+
+  async filterTransferHistory(options: HistoryFilterOptions): Promise<TransferSession[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession[]>('filter_transfer_history', { options });
+    }
+
+    let list = loadWebSessions();
+
+    if (options.direction && options.direction !== 'all') {
+      const targetDir =
+        options.direction === 'sent'
+          ? 'outgoing'
+          : options.direction === 'received'
+            ? 'incoming'
+            : options.direction;
+      list = list.filter(s => s.direction === targetDir);
+    }
+
+    if (options.status && options.status !== 'all') {
+      if (options.status === 'active') {
+        list = list.filter(s =>
+          ['transferring', 'preparing', 'connecting', 'waiting_for_approval', 'paused', 'queued'].includes(s.status)
+        );
+      } else {
+        list = list.filter(s => s.status === options.status);
+      }
+    }
+
+    if (options.searchQuery && options.searchQuery.trim()) {
+      const q = options.searchQuery.trim().toLowerCase();
+      list = list.filter(s => {
+        const root = (s.rootFolderName || s.files[0]?.name || '').toLowerCase();
+        const sender = s.senderDeviceName.toLowerCase();
+        const recipient = s.recipientDeviceName.toLowerCase();
+        const id = s.transferId.toLowerCase();
+        const fileMatch = s.files.some(
+          f => f.name.toLowerCase().includes(q) || (f.relativePath || '').toLowerCase().includes(q)
+        );
+        return root.includes(q) || sender.includes(q) || recipient.includes(q) || id.includes(q) || fileMatch;
+      });
+    }
+
+    switch (options.sortBy) {
+      case 'oldest':
+        list.sort((a, b) => a.startedAt - b.startedAt);
+        break;
+      case 'largest':
+        list.sort((a, b) => b.totalBytes - a.totalBytes);
+        break;
+      case 'smallest':
+        list.sort((a, b) => a.totalBytes - b.totalBytes);
+        break;
+      case 'success':
+        list.sort((a, b) => Number(b.status === 'completed') - Number(a.status === 'completed') || b.startedAt - a.startedAt);
+        break;
+      case 'failed':
+        list.sort((a, b) => Number(b.status === 'failed') - Number(a.status === 'failed') || b.startedAt - a.startedAt);
+        break;
+      default:
+        list.sort((a, b) => b.startedAt - a.startedAt);
+        break;
+    }
+
+    const offset = options.offset ?? 0;
+    const limit = options.limit ?? 100;
+    return list.slice(offset, offset + limit);
+  },
+
+  async deleteHistoryEntry(transferId: string): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('delete_history_entry', { transferId });
+    }
+    const current = loadWebSessions();
+    const next = current.filter(s => s.transferId !== transferId);
+    saveWebSessions(next);
+    return next.length < current.length;
+  },
+
+  async clearTransferHistory(): Promise<number> {
+    if (isTauriEnvironment()) {
+      return await invoke<number>('clear_transfer_history');
+    }
+    const current = loadWebSessions();
+    saveWebSessions([]);
+    return current.length;
+  },
+
+  // --- Phase 5: Transfer Statistics ---
+
+  async getTransferStatistics(timeFrame: 'today' | '7d' | '30d' | 'all' = 'all'): Promise<TransferStatistics> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferStatistics>('get_transfer_statistics', { timeFrame });
+    }
+
+    const now = Date.now();
+    const cutoff =
+      timeFrame === 'today'
+        ? now - 24 * 3600 * 1000
+        : timeFrame === '7d'
+          ? now - 7 * 24 * 3600 * 1000
+          : timeFrame === '30d'
+            ? now - 30 * 24 * 3600 * 1000
+            : 0;
+
+    const sessions = loadWebSessions().filter(s => s.startedAt >= cutoff);
+
+    let totalBytesSent = 0;
+    let totalBytesReceived = 0;
+    let totalFilesSent = 0;
+    let totalFilesReceived = 0;
+    let successfulTransfersCount = 0;
+    let failedTransfersCount = 0;
+    let speedSum = 0;
+    let speedCount = 0;
+    let largestFileName = 'None';
+    let largestFileSize = 0;
+
+    const deviceMap = new Map<string, TopDeviceStat>();
+    const dayMap = new Map<string, DailyVolumeStat>();
+
+    for (const s of sessions) {
+      const fileCount = s.files.filter(f => !f.isDirectory).length || s.files.length;
+      if (s.direction === 'outgoing') {
+        totalBytesSent += s.totalBytes;
+        totalFilesSent += fileCount;
+      } else {
+        totalBytesReceived += s.totalBytes;
+        totalFilesReceived += fileCount;
+      }
+
+      if (s.status === 'completed') {
+        successfulTransfersCount++;
+      } else if (s.status === 'failed' || s.status === 'cancelled') {
+        failedTransfersCount++;
+      }
+
+      if (s.speedBytesPerSec > 0) {
+        speedSum += s.speedBytesPerSec;
+        speedCount++;
+      }
+
+      for (const f of s.files) {
+        if (!f.isDirectory && f.size > largestFileSize) {
+          largestFileSize = f.size;
+          largestFileName = f.name;
+        }
+      }
+
+      const peerName = s.direction === 'outgoing' ? s.recipientDeviceName : s.senderDeviceName;
+      const existingDev = deviceMap.get(peerName) || { deviceName: peerName, transferCount: 0, totalBytes: 0 };
+      existingDev.transferCount += 1;
+      existingDev.totalBytes += s.totalBytes;
+      deviceMap.set(peerName, existingDev);
+
+      const dateStr = new Date(s.startedAt).toISOString().slice(0, 10);
+      const dayEntry = dayMap.get(dateStr) || { date: dateStr, sentBytes: 0, receivedBytes: 0, count: 0 };
+      if (s.direction === 'outgoing') {
+        dayEntry.sentBytes += s.totalBytes;
+      } else {
+        dayEntry.receivedBytes += s.totalBytes;
+      }
+      dayEntry.count += 1;
+      dayMap.set(dateStr, dayEntry);
+    }
+
+    const finished = successfulTransfersCount + failedTransfersCount;
+    const successRatePercentage = finished > 0 ? Math.min(100, (successfulTransfersCount / finished) * 100) : 100;
+
+    return {
+      timeFrame,
+      totalBytesSent,
+      totalBytesReceived,
+      totalFilesSent,
+      totalFilesReceived,
+      successfulTransfersCount,
+      failedTransfersCount,
+      averageSpeedBps: speedCount > 0 ? Math.round(speedSum / speedCount) : 0,
+      largestFileName,
+      largestFileSize,
+      successRatePercentage,
+      topDevices: Array.from(deviceMap.values())
+        .sort((a, b) => b.transferCount - a.transferCount || b.totalBytes - a.totalBytes)
+        .slice(0, 5),
+      dailyVolume: Array.from(dayMap.values())
+        .sort((a, b) => a.date.localeCompare(b.date))
+        .slice(-7),
+    };
+  },
+
+  // --- Phase 5: Background Status, Notifications & Recovery ---
+
+  async getBackgroundTransferStatus(): Promise<BackgroundTransferStatus> {
+    if (isTauriEnvironment()) {
+      return await invoke<BackgroundTransferStatus>('get_background_transfer_status');
+    }
+    const list = Object.values(webActiveTransfers);
+    const active = list.filter(s => ['transferring', 'preparing', 'connecting', 'verifying', 'queued'].includes(s.status));
+    const paused = list.filter(s => s.status === 'paused');
+    return {
+      activeTransfersCount: active.length,
+      pausedTransfersCount: paused.length,
+      totalTransferSpeedBps: active.reduce((acc, s) => acc + s.speedBytesPerSec, 0),
+      activeTransferNames: active.map(s => s.rootFolderName || s.files[0]?.name || 'Transfer'),
+      isBackgroundActive: active.length > 0,
+    };
+  },
+
+  async getRecoverableTransfers(): Promise<RecoverableTransferInfo[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<RecoverableTransferInfo[]>('get_recoverable_transfers');
+    }
+    const sessions = loadWebSessions().filter(s =>
+      ['transferring', 'paused', 'queued', 'preparing'].includes(s.status)
+    );
+    return sessions.map(s => ({
+      transferId: s.transferId,
+      rootName: s.rootFolderName || s.files[0]?.name || 'Transfer',
+      direction: s.direction,
+      peerDeviceId: s.direction === 'incoming' ? s.senderDeviceId : s.recipientDeviceId,
+      peerDeviceName: s.direction === 'incoming' ? s.senderDeviceName : s.recipientDeviceName,
+      totalBytes: s.totalBytes,
+      bytesTransferred: s.bytesTransferred,
+      partialFileExists: true,
+      canResume: true,
+      canRetryFresh: s.direction === 'outgoing',
+      reason: 'Interrupted transfer session detected from persistent storage',
+      startedAt: s.startedAt,
+    }));
+  },
+
+  async recoverTransfer(transferId: string, freshRetry = false): Promise<TransferSession> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSession>('recover_transfer', { transferId, freshRetry });
+    }
+    if (freshRetry) {
+      return this.retryTransfer(transferId);
+    }
+    const existing = await this.getTransferDetails(transferId);
+    if (!existing) {
+      throw new Error(`Recoverable transfer ${transferId} not found`);
+    }
+    const resumed: TransferSession = { ...existing, status: 'transferring' };
+    this._runWebTransferSimulation(resumed);
+    return resumed;
+  },
+
+  async setNotificationsEnabled(enabled: boolean): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('set_notifications_enabled', { enabled });
+    }
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_NOTIF_KEY, String(enabled));
+    }
+    return enabled;
+  },
+
+  async getNotificationsEnabled(): Promise<boolean> {
+    if (isTauriEnvironment()) {
+      return await invoke<boolean>('get_notifications_enabled');
+    }
+    return getWebNotificationsEnabled();
   },
 
   simulateIncomingTransferRequest(fromDevice?: Partial<DiscoveredDevice>): IncomingTransferProposal {
@@ -1092,17 +1905,22 @@ export const tauriBridge = {
       senderPlatform: fromDevice?.platform || 'android',
       senderIpAddress: fromDevice?.ipAddress || '192.168.1.142',
       fileCount: 2,
-      totalBytes: 52428800, // 50 MB
+      totalBytes: 52428800,
+      isFolder: true,
+      rootFolderName: 'Pixel_Trip_2026',
+      priority: 'normal',
       files: [
         {
           fileId: 'f-p8-01',
           fileName: 'Pixel_Camera_Photos_2026.zip',
+          relativePath: 'Pixel_Trip_2026/photos/Pixel_Camera_Photos_2026.zip',
           fileSize: 41943040,
           mimeType: 'application/zip',
         },
         {
           fileId: 'f-p8-02',
           fileName: 'audio_recording_notes.m4a',
+          relativePath: 'Pixel_Trip_2026/audio/audio_recording_notes.m4a',
           fileSize: 10485760,
           mimeType: 'audio/mp4',
         },
@@ -1139,4 +1957,3 @@ export const tauriBridge = {
     }
   },
 };
-

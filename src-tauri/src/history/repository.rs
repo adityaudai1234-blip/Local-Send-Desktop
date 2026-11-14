@@ -142,8 +142,13 @@ impl HistoryRepository {
 
         if let Some(ref dir) = options.direction {
             if dir != "all" {
+                let normalized = match dir.as_str() {
+                    "sent" => "outgoing".to_string(),
+                    "received" => "incoming".to_string(),
+                    other => other.to_string(),
+                };
                 conditions.push("direction = ?");
-                query_params.push(Box::new(dir.clone()));
+                query_params.push(Box::new(normalized));
             }
         }
 

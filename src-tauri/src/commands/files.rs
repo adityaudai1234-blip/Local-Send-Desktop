@@ -49,25 +49,80 @@ pub async fn set_download_directory(path: String) -> Result<String, String> {
 
 #[tauri::command]
 pub async fn open_received_file_location(path: String) -> Result<bool, String> {
+    reveal_received_file(path).await
+}
+
+#[tauri::command]
+pub async fn open_received_file(path: String) -> Result<bool, String> {
+    let target = std::path::Path::new(&path);
+    if !target.exists() {
+        return Err(format!("File does not exist on disk: {}", path));
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        std::process::Command::new("cmd")
+            .args(["/C", "start", "", &path])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        std::process::Command::new("open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        std::process::Command::new("xdg-open")
+            .arg(&path)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+
+    Ok(true)
+}
+
+#[tauri::command]
+pub async fn reveal_received_file(path: String) -> Result<bool, String> {
+    let target = std::path::Path::new(&path);
+    let fallback_dir = storage::get_download_directory();
+    let effective = if target.exists() {
+        target.to_path_buf()
+    } else {
+        fallback_dir
+    };
+
     #[cfg(target_os = "windows")]
     {
         let _ = std::process::Command::new("explorer")
             .arg("/select,")
-            .arg(&path)
+            .arg(&effective)
             .spawn();
     }
     #[cfg(target_os = "macos")]
     {
         let _ = std::process::Command::new("open")
             .arg("-R")
-            .arg(&path)
+            .arg(&effective)
             .spawn();
     }
     #[cfg(target_os = "linux")]
     {
+        let dir = if effective.is_dir() {
+            effective.as_path()
+        } else {
+            effective.parent().unwrap_or(std::path::Path::new("/"))
+        };
         let _ = std::process::Command::new("xdg-open")
-            .arg(std::path::Path::new(&path).parent().unwrap_or(std::path::Path::new("/")))
+            .arg(dir)
             .spawn();
     }
     Ok(true)
+}
+
+#[tauri::command]
+pub async fn copy_file_path(path: String) -> Result<String, String> {
+    Ok(path)
 }
