@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use super::priority::TransferPriority;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -19,6 +20,7 @@ pub enum TransferStatus {
     Failed,
     Cancelled,
     Paused,
+    Queued,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -29,6 +31,8 @@ pub struct TransferFileItem {
     pub size: u64,
     pub mime_type: String,
     pub path: Option<String>,
+    pub relative_path: Option<String>,
+    pub is_directory: bool,
     pub sha256_checksum: Option<String>,
     pub is_verified: bool,
     pub bytes_transferred: u64,
@@ -53,6 +57,9 @@ pub struct TransferSession {
     pub speed_bytes_per_sec: u64,
     pub estimated_seconds_remaining: Option<u64>,
     pub status: TransferStatus,
+    pub priority: TransferPriority,
+    pub is_folder: bool,
+    pub root_folder_name: Option<String>,
     pub error_message: Option<String>,
     pub started_at: i64,
     pub completed_at: Option<i64>,

@@ -135,6 +135,8 @@ pub struct FileItemPayload {
     pub file_size: u64,
     pub mime_type: String,
     pub sha256_checksum: Option<String>,
+    pub relative_path: Option<String>,
+    pub is_directory: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -145,6 +147,9 @@ pub struct TransferRequestPayload {
     pub total_bytes: u64,
     pub files: Vec<FileItemPayload>,
     pub expires_at: i64,
+    pub is_folder: Option<bool>,
+    pub root_folder_name: Option<String>,
+    pub priority: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
