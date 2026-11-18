@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::fs::{File, OpenOptions};
 use tokio::io::AsyncWriteExt;
@@ -8,11 +8,15 @@ use tokio::sync::Mutex;
 use super::metadata::TransferFileItem;
 use super::verification::StreamHasher;
 use crate::file_system::filename::resolve_conflict;
-use crate::file_system::storage::{atomic_finalize_part_file, clean_incomplete_file, get_download_directory, get_part_file_path};
-use crate::folders::structure::prepare_incoming_path;
+use crate::file_system::storage::get_download_directory;
+use crate::filesystem_security::{
+    apply_restrictive_file_permissions, cleanup_part_file, resolve_safe_destination,
+    safe_part_file_path, sanitize_untrusted_filename, secure_finalize_part_file,
+};
 
 pub struct ActiveFileReceive {
     pub file_id: String,
+    pub download_root: PathBuf,
     pub target_path: PathBuf,
     pub part_path: PathBuf,
     pub writer: File,
@@ -32,7 +36,8 @@ impl FileReceiver {
         }
     }
 
-    /// Initializes a receiving slot for an incoming file or directory, preserving safe folder structure
+    /// Initializes a hardened receiving slot strictly contained inside `download_dir`,
+    /// blocking traversal, symlinks, reserved device filenames, and execute bits.
     pub async fn prepare_file_reception(
         &self,
         transfer_id: &str,
@@ -45,25 +50,28 @@ impl FileReceiver {
                 .relative_path
                 .as_deref()
                 .unwrap_or(&file_item.name);
-            return prepare_incoming_path(&download_dir, rel, true);
+            return resolve_safe_destination(&download_dir, &file_item.name, Some(rel), true);
         }
 
-        let target_path = if let Some(ref rel_path) = file_item.relative_path {
-            let prepared = prepare_incoming_path(&download_dir, rel_path, false)?;
-            if prepared.exists() {
-                if let Some(parent) = prepared.parent() {
-                    resolve_conflict(parent, &file_item.name)
-                } else {
-                    resolve_conflict(&download_dir, &file_item.name)
-                }
+        let prepared = resolve_safe_destination(
+            &download_dir,
+            &file_item.name,
+            file_item.relative_path.as_deref(),
+            false,
+        )?;
+
+        let target_path = if prepared.exists() {
+            let safe_leaf = sanitize_untrusted_filename(&file_item.name)?;
+            if let Some(parent) = prepared.parent() {
+                resolve_conflict(parent, &safe_leaf)
             } else {
-                prepared
+                resolve_conflict(&download_dir, &safe_leaf)
             }
         } else {
-            resolve_conflict(&download_dir, &file_item.name)
+            prepared
         };
 
-        let part_path = get_part_file_path(&target_path, transfer_id);
+        let part_path = safe_part_file_path(&download_dir, &target_path, transfer_id)?;
 
         let writer = OpenOptions::new()
             .create(true)
@@ -73,8 +81,11 @@ impl FileReceiver {
             .await
             .map_err(|e| format!("Failed to create part file {}: {}", part_path.display(), e))?;
 
+        apply_restrictive_file_permissions(&part_path);
+
         let active_receive = ActiveFileReceive {
             file_id: file_item.file_id.clone(),
+            download_root: download_dir,
             target_path: target_path.clone(),
             part_path,
             writer,
@@ -89,7 +100,6 @@ impl FileReceiver {
         Ok(target_path)
     }
 
-    /// Writes an incoming chunk to the `.part` file and updates the streaming SHA-256
     pub async fn write_chunk(
         &self,
         file_id: &str,
@@ -114,7 +124,8 @@ impl FileReceiver {
         Ok(active.bytes_written)
     }
 
-    /// Finalizes reception: verifies SHA-256 and atomically renames `.part` to target path
+    /// Verifies SHA-256 checksum, enforces strict path containment, atomically moves `.part` to target,
+    /// and sets restrictive owner-only permissions (`0o600` on Unix).
     pub async fn finalize_file_reception(
         &self,
         file_id: &str,
@@ -126,7 +137,6 @@ impl FileReceiver {
                 .ok_or_else(|| format!("Active reception not found for file {}", file_id))?
         };
 
-        // Flush writer and close file handle
         active
             .writer
             .flush()
@@ -134,30 +144,25 @@ impl FileReceiver {
             .map_err(|e| format!("Failed to flush part file: {}", e))?;
         drop(active.writer);
 
-        // Verify SHA-256
         let receiver_sha256 = active.stream_hasher.finalize_hex();
         if !receiver_sha256.eq_ignore_ascii_case(sender_sha256) {
-            // Delete corrupted part file
-            clean_incomplete_file(&active.part_path);
+            cleanup_part_file(&active.part_path);
             return Err(format!(
                 "Integrity verification failed! Sender: {}, Receiver: {}",
                 sender_sha256, receiver_sha256
             ));
         }
 
-        // Atomically rename .part to final destination
-        atomic_finalize_part_file(&active.part_path, &active.target_path)
-            .map_err(|e| format!("Failed to atomically finalize file: {}", e))?;
+        secure_finalize_part_file(&active.download_root, &active.part_path, &active.target_path)?;
 
         Ok(active.target_path)
     }
 
-    /// Cleans up any open part files for a cancelled or failed transfer
     pub async fn cancel_file_reception(&self, file_id: &str) {
         let mut lock = self.active_files.lock().await;
         if let Some(active) = lock.remove(file_id) {
             drop(active.writer);
-            clean_incomplete_file(&active.part_path);
+            cleanup_part_file(&active.part_path);
         }
     }
 }

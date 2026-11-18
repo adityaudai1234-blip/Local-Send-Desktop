@@ -12,11 +12,13 @@ import {
   Cpu,
   ShieldCheck,
   Wifi,
+  Lock,
 } from 'lucide-react';
 import { useSettingsStore } from '../../stores/settingsStore';
 import { useDeviceStore } from '../../stores/deviceStore';
 import { usePairingStore } from '../../stores/pairingStore';
 import { useTransferStore } from '../../stores/transferStore';
+import { useSecurityStore } from '../../stores/securityStore';
 import { isTauriEnvironment } from '../../services/tauriBridge';
 
 interface SidebarProps {
@@ -29,6 +31,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
   const { discoveryState } = useDeviceStore();
   const { trustedDevices } = usePairingStore();
   const { overviewStats } = useTransferStore();
+  const { posture } = useSecurityStore();
   const isNative = isTauriEnvironment();
 
   const navItems = [
@@ -38,6 +41,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ currentTab, onSelectTab }) => 
     { id: 'transfers', label: 'Transfers', icon: ArrowLeftRight, count: overviewStats.activeCount },
     { id: 'history', label: 'History', icon: Clock },
     { id: 'analytics', label: 'Analytics', icon: BarChart3 },
+    { id: 'security', label: 'Security & Audit', icon: Lock, count: posture?.activeVerifiedSessions },
     { id: 'settings', label: 'Settings', icon: Settings },
   ];
 

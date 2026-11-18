@@ -3,9 +3,10 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use uuid::Uuid;
+
 use crate::models::Platform;
 use crate::pairing::session::PairingSession;
-use crate::security::generate_verification_code;
+use crate::security::{generate_verification_code, PairingReplayGuard};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -23,6 +24,14 @@ pub struct PairingRequest {
     pub verification_code: String,
     pub timestamp: i64,
     pub status: String, // "pending", "accepted", "rejected", "expired"
+    #[serde(default = "default_key_version")]
+    pub key_version: u32,
+    #[serde(default)]
+    pub identity_warning: Option<String>,
+}
+
+fn default_key_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -37,6 +46,7 @@ pub struct PairingResponse {
 pub struct HandshakeManager {
     active_session: Mutex<Option<PairingSession>>,
     pending_requests: Mutex<HashMap<String, PairingRequest>>,
+    pub replay_guard: PairingReplayGuard,
 }
 
 impl HandshakeManager {
@@ -44,6 +54,7 @@ impl HandshakeManager {
         Self {
             active_session: Mutex::new(None),
             pending_requests: Mutex::new(HashMap::new()),
+            replay_guard: PairingReplayGuard::new(),
         }
     }
 
@@ -83,7 +94,13 @@ impl HandshakeManager {
         from_port: u16,
         from_public_key: String,
         from_fingerprint: String,
+        key_version: u32,
+        identity_warning: Option<String>,
     ) -> Result<PairingRequest, String> {
+        if self.replay_guard.is_consumed(session_id) {
+            return Err("Pairing session already consumed (replay attempt blocked)".to_string());
+        }
+
         let session = match self.get_session() {
             Some(s) => s,
             None => return Err("No active pairing session or session has expired".to_string()),
@@ -113,6 +130,8 @@ impl HandshakeManager {
             verification_code,
             timestamp: Utc::now().timestamp_millis(),
             status: "pending".to_string(),
+            key_version,
+            identity_warning,
         };
 
         let mut reqs = self.pending_requests.lock().unwrap();
@@ -131,6 +150,9 @@ impl HandshakeManager {
         let mut request = reqs
             .remove(request_id)
             .ok_or_else(|| "Pairing request not found or already resolved".to_string())?;
+
+        // Consume pairing session ID so it can never be replayed
+        self.replay_guard.mark_consumed(&request.session_id);
 
         request.status = if accept {
             "accepted".to_string()

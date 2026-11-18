@@ -1,9 +1,31 @@
-pub mod keys;
-pub mod crypto;
+pub mod authentication;
 pub mod certificates;
+pub mod crypto;
 pub mod encrypted_channel;
+pub mod encryption;
+pub mod identity;
+pub mod key_derivation;
+pub mod key_manager;
+pub mod key_rotation;
+pub mod key_store;
+pub mod keys;
+pub mod replay_protection;
+pub mod secure_session;
+#[cfg(test)]
+pub mod tests;
+pub mod verification;
 
-pub use keys::*;
-pub use crypto::*;
+pub use authentication::*;
 pub use certificates::*;
+pub use crypto::*;
 pub use encrypted_channel::*;
+pub use encryption::*;
+pub use identity::*;
+pub use key_derivation::*;
+pub use key_manager::*;
+pub use key_rotation::*;
+pub use key_store::*;
+pub use keys::*;
+pub use replay_protection::*;
+pub use secure_session::*;
+pub use verification::*;

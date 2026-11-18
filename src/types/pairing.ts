@@ -42,6 +42,8 @@ export interface PairingRequest {
   verificationCode: string;
   timestamp: number;
   status: 'pending' | 'accepted' | 'rejected' | 'expired';
+  keyVersion?: number;
+  identityWarning?: string | null;
 }
 
 export interface PairingResponse {
@@ -65,4 +67,8 @@ export interface TrustedDevice {
   lastConnectedAt: number;
   isOnline: boolean;
   trustStatus: 'trusted' | 'pending' | 'revoked';
+  keyVersion?: number;
+  lastAuthAt?: number | null;
+  verificationStatus?: 'verified' | 'unverified' | 'identity_changed' | 'revoked' | string;
+  securityWarning?: string | null;
 }

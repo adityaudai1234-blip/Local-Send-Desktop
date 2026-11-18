@@ -7,12 +7,14 @@ import { TrustedDevices } from './pages/TrustedDevices';
 import { Transfers } from './pages/Transfers';
 import { History } from './pages/History';
 import { Analytics } from './pages/Analytics';
+import { SecurityAudit } from './pages/SecurityAudit';
 import { Settings } from './pages/Settings';
 import { useDeviceStore } from './stores/deviceStore';
 import { useSettingsStore } from './stores/settingsStore';
 import { usePairingStore } from './stores/pairingStore';
 import { useConnectionStore } from './stores/connectionStore';
 import { useTransferStore } from './stores/transferStore';
+import { useSecurityStore } from './stores/securityStore';
 import { ManualAddModal } from './components/devices/ManualAddModal';
 import { PairingModal } from './components/pairing/PairingModal';
 import { QrScannerModal } from './components/pairing/QrScannerModal';
@@ -30,6 +32,7 @@ export default function App() {
   const { init: initPairing, notification: pairingNotification, clearNotification: clearPairingNotification, error: pairingError, clearError: clearPairingError } = usePairingStore();
   const { init: initConnection, error: connectionError, clearError: clearConnectionError } = useConnectionStore();
   const { init: initTransfer, notification: transferNotification, clearNotification: clearTransferNotification, error: transferError, clearError: clearTransferError } = useTransferStore();
+  const { init: initSecurity, error: securityError, clearError: clearSecurityError } = useSecurityStore();
   const { theme } = useSettingsStore();
 
   useEffect(() => {
@@ -37,6 +40,7 @@ export default function App() {
     initPairing();
     initConnection();
     initTransfer();
+    initSecurity();
 
     let unlistenNav: (() => void) | undefined;
     tauriBridge
@@ -50,7 +54,7 @@ export default function App() {
     return () => {
       if (unlistenNav) unlistenNav();
     };
-  }, [initDevice, initPairing, initConnection, initTransfer]);
+  }, [initDevice, initPairing, initConnection, initTransfer, initSecurity]);
 
   const getPageTitle = () => {
     switch (currentTab) {
@@ -59,22 +63,24 @@ export default function App() {
       case 'devices':
         return { title: 'Nearby Devices', subtitle: 'Discover compatible clients over mDNS' };
       case 'trusted':
-        return { title: 'Trusted Devices', subtitle: 'Manage persistent Ed25519 pairing relationships' };
+        return { title: 'Trusted Devices', subtitle: 'Manage pinned Ed25519 keys and device revocation' };
       case 'transfers':
         return { title: 'Active Transfers', subtitle: 'Priority queue, background sharing, and recovery' };
       case 'history':
         return { title: 'Transfer History', subtitle: 'Persistent SQLite logs, search, and inspection' };
       case 'analytics':
         return { title: 'Analytics & Insights', subtitle: 'Local transfer volume, speeds, and top peers' };
+      case 'security':
+        return { title: 'Security & Audit', subtitle: 'End-to-end encryption, key rotation, self-tests, and audit log' };
       case 'settings':
-        return { title: 'Settings', subtitle: 'Identity, notifications, tray, and network preferences' };
+        return { title: 'Settings', subtitle: 'Privacy controls, identity, notifications, tray, and network' };
       default:
         return { title: 'BeamDrop', subtitle: 'Local file sharing' };
     }
   };
 
   const { title, subtitle } = getPageTitle();
-  const activeError = deviceError || pairingError || connectionError || transferError;
+  const activeError = deviceError || pairingError || connectionError || transferError || securityError;
   const activeNotification = pairingNotification || transferNotification;
 
   return (
@@ -104,6 +110,7 @@ export default function App() {
                 clearPairingError();
                 clearConnectionError();
                 clearTransferError();
+                clearSecurityError();
               }}
               className="p-1 rounded hover:bg-rose-500/20 transition-colors"
             >
@@ -159,6 +166,7 @@ export default function App() {
           {currentTab === 'transfers' && <Transfers />}
           {currentTab === 'history' && <History />}
           {currentTab === 'analytics' && <Analytics />}
+          {currentTab === 'security' && <SecurityAudit />}
           {currentTab === 'settings' && <Settings />}
         </main>
       </div>

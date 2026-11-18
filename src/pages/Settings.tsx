@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import {
   Sun,
   Moon,
@@ -6,11 +6,16 @@ import {
   Layers,
   Folder,
   Bell,
+  Shield,
+  Lock,
+  AlertTriangle,
 } from 'lucide-react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useDeviceStore } from '../stores/deviceStore';
 import { useTransferStore } from '../stores/transferStore';
+import { useSecurityStore } from '../stores/securityStore';
 import { isTauriEnvironment } from '../services/tauriBridge';
+import type { SecurityPrivacySettings } from '../types/security';
 
 export const Settings: React.FC = () => {
   const {
@@ -29,6 +34,12 @@ export const Settings: React.FC = () => {
 
   const { localDevice, updateDeviceName, isLoading } = useDeviceStore();
   const { downloadDirectory, setDownloadDirectory } = useTransferStore();
+  const {
+    posture,
+    privacySettings,
+    updatePrivacySettings,
+    refreshAll: refreshSecurity,
+  } = useSecurityStore();
 
   const [deviceNameInput, setDeviceNameInput] = useState(localDevice?.name || '');
   const [nameSavedNotice, setNameSavedNotice] = useState(false);
@@ -37,6 +48,29 @@ export const Settings: React.FC = () => {
   const [dirSavedNotice, setDirSavedNotice] = useState(false);
 
   const isNative = isTauriEnvironment();
+
+  useEffect(() => {
+    refreshSecurity();
+  }, [refreshSecurity]);
+
+  const handlePrivacyToggle = async (patch: Partial<SecurityPrivacySettings>) => {
+    const base: SecurityPrivacySettings = privacySettings || {
+      hideDeviceName: false,
+      discoveryEnabled: autoStartDiscovery,
+      allowIncomingPairing: true,
+      requireTransferApproval: true,
+      autoAcceptFromTrusted: false,
+      strictIdentityPinning: true,
+      downloadDirectory: downloadDirectory || '~/Downloads/BeamDrop',
+      notificationsEnabled,
+    };
+
+    const next: SecurityPrivacySettings = { ...base, ...patch };
+    if (next.requireTransferApproval) {
+      next.autoAcceptFromTrusted = false;
+    }
+    await updatePrivacySettings(next);
+  };
 
   const handleSaveDeviceName = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -52,6 +86,7 @@ export const Settings: React.FC = () => {
     e.preventDefault();
     if (!dirInput.trim()) return;
     await setDownloadDirectory(dirInput.trim());
+    await handlePrivacyToggle({ downloadDirectory: dirInput.trim() });
     setDirSavedNotice(true);
     setTimeout(() => setDirSavedNotice(false), 2000);
   };
@@ -67,6 +102,7 @@ export const Settings: React.FC = () => {
 
   const handleToggleDesktopNotifications = async (checked: boolean) => {
     await setNotificationsEnabled(checked);
+    await handlePrivacyToggle({ notificationsEnabled: checked });
     if (checked && typeof window !== 'undefined' && 'Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission().catch(() => undefined);
     }
@@ -79,11 +115,147 @@ export const Settings: React.FC = () => {
           Application Preferences
         </h2>
         <p className="text-xs text-neutral-500">
-          Configure discovery parameters, storage folder, desktop notifications, and system tray behavior.
+          Configure privacy &amp; security policies, discovery parameters, storage folder, notifications, and tray behavior.
         </p>
       </div>
 
-      {/* 1. Device Identity Settings */}
+      {/* 1. Privacy & Security Controls (Phase 6) */}
+      <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+              <Shield className="w-4 h-4 text-emerald-500" />
+              <span>Privacy &amp; Security Controls</span>
+            </h3>
+            <p className="text-xs text-neutral-500">
+              Control LAN visibility, incoming pairing authorization, key pinning, and transfer approval policies.
+            </p>
+          </div>
+          {posture && (
+            <span className="font-mono text-[11px] px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-700 dark:text-neutral-300">
+              {posture.activeVerifiedSessions > 0
+                ? `${posture.activeVerifiedSessions} Verified E2EE`
+                : 'Standby (E2EE Ready)'}
+            </span>
+          )}
+        </div>
+
+        <div className="space-y-3 text-xs">
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Hide Device Name in LAN Discovery
+              </span>
+              <span className="text-neutral-500">
+                Broadcast an anonymized peer alias (&ldquo;BeamDrop Peer XXXX&rdquo;) until authenticated.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacySettings?.hideDeviceName ?? false}
+              onChange={(e) => handlePrivacyToggle({ hideDeviceName: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Enable Local Device Discovery (mDNS)
+              </span>
+              <span className="text-neutral-500">
+                Advertise presence and listen for peers on your local Wi-Fi network.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacySettings?.discoveryEnabled ?? true}
+              onChange={(e) => handlePrivacyToggle({ discoveryEnabled: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Allow New Incoming Pairing Requests
+              </span>
+              <span className="text-neutral-500">
+                Disable temporarily when in untrusted public networks to block new QR pairing attempts.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacySettings?.allowIncomingPairing ?? true}
+              onChange={(e) => handlePrivacyToggle({ allowIncomingPairing: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Require Explicit Transfer Approval
+              </span>
+              <span className="text-neutral-500">
+                Always prompt before accepting incoming files or folders (Recommended).
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacySettings?.requireTransferApproval ?? true}
+              onChange={(e) => handlePrivacyToggle({ requireTransferApproval: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Auto-Accept Transfers from Verified Trusted Devices
+              </span>
+              <span className="text-neutral-500">
+                Opt-in convenience setting; only permitted when manual approval is turned off.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              disabled={privacySettings?.requireTransferApproval ?? true}
+              checked={privacySettings?.autoAcceptFromTrusted ?? false}
+              onChange={(e) => handlePrivacyToggle({ autoAcceptFromTrusted: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900 disabled:opacity-40"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Strict Peer Identity Pinning
+              </span>
+              <span className="text-neutral-500">
+                Block connections automatically if a trusted device&rsquo;s Ed25519 key changes unexpectedly.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={privacySettings?.strictIdentityPinning ?? true}
+              onChange={(e) => handlePrivacyToggle({ strictIdentityPinning: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+        </div>
+
+        {privacySettings?.autoAcceptFromTrusted && (
+          <div className="p-3 rounded-lg border border-amber-500/30 bg-amber-500/10 flex items-start gap-2 text-[11px] text-amber-700 dark:text-amber-300">
+            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+            <span>
+              Auto-accept is active for verified trusted devices. Any previously paired peer can push files to your download directory without a prompt until revoked.
+            </span>
+          </div>
+        )}
+      </section>
+
+      {/* 2. Device Identity Settings */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -126,11 +298,14 @@ export const Settings: React.FC = () => {
           <div className="text-[11px] text-neutral-400 space-y-0.5">
             <p>• Persistent Device UUID: <span className="font-mono text-neutral-600 dark:text-neutral-300">{localDevice?.id}</span></p>
             <p>• Operating System: <span className="font-mono text-neutral-600 dark:text-neutral-300">{localDevice?.platform}</span></p>
+            {posture && (
+              <p>• Identity Key Fingerprint: <span className="font-mono text-neutral-600 dark:text-neutral-300">{posture.fingerprint} (v{posture.keyVersion})</span></p>
+            )}
           </div>
         </form>
       </section>
 
-      {/* 2. Storage & Received Files Directory */}
+      {/* 3. Storage & Received Files Directory */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
@@ -138,7 +313,7 @@ export const Settings: React.FC = () => {
             <span>Received Files &amp; Folders Location</span>
           </h3>
           <p className="text-xs text-neutral-500">
-            Incoming files and directory trees are written atomically via temporary <span className="font-mono">.part</span> files to prevent corruption.
+            Incoming files and directory trees are written atomically via temporary <span className="font-mono">.part</span> files inside your containment sandbox with owner-only permissions.
           </p>
         </div>
 
@@ -167,7 +342,7 @@ export const Settings: React.FC = () => {
         </form>
       </section>
 
-      {/* 3. Visual Theme Selection */}
+      {/* 4. Visual Theme Selection */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -211,7 +386,7 @@ export const Settings: React.FC = () => {
         </div>
       </section>
 
-      {/* 4. Network Discovery Settings */}
+      {/* 5. Network Discovery Settings */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
         <div>
           <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
@@ -266,7 +441,7 @@ export const Settings: React.FC = () => {
         </div>
       </section>
 
-      {/* 5. Notifications & Background Tray Preferences */}
+      {/* 6. Notifications & Background Tray Preferences */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-3">
         <div>
           <h3 className="text-sm font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
@@ -318,38 +493,45 @@ export const Settings: React.FC = () => {
         </div>
       </section>
 
-      {/* 6. Application Information & Architecture */}
+      {/* 7. Live Security & Cryptographic Architecture Summary */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-3 text-xs">
         <div className="flex items-center gap-2 text-neutral-900 dark:text-white font-semibold">
-          <Layers className="w-4 h-4" />
-          <span>System &amp; Architecture Specifications</span>
+          <Lock className="w-4 h-4 text-emerald-500" />
+          <span>Cryptographic Security &amp; Architecture Specifications</span>
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-neutral-500">
           <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
-            <span className="font-medium text-neutral-900 dark:text-white block">Tauri 2 Framework</span>
-            <p>Rust native backend with zero Chromium overhead, native tray controls, and Tokio sockets.</p>
+            <span className="font-medium text-neutral-900 dark:text-white block">Authenticated Key Exchange</span>
+            <p>Ed25519 long-term identity authentication + ephemeral X25519 ECDH + HKDF-SHA256.</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
+            <span className="font-medium text-neutral-900 dark:text-white block">AEAD Encrypted Transport</span>
+            <p>ChaCha20-Poly1305 / AES-256-GCM with deterministic monotonic nonces and +-120s replay guards.</p>
+          </div>
+
+          <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
+            <span className="font-medium text-neutral-900 dark:text-white block">OS Keyring Custody</span>
+            <p>
+              {posture?.secureStorage.available
+                ? `Active via ${posture.secureStorage.backendName}.`
+                : 'Plaintext disk storage is disabled; ephemeral RAM key active outside native keyring.'}
+            </p>
           </div>
 
           <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
             <span className="font-medium text-neutral-900 dark:text-white block">Zero Cloud Architecture</span>
-            <p>No telemetry, no Firebase, no cloud relays. Transfers stay entirely within your local LAN.</p>
-          </div>
-
-          <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
-            <span className="font-medium text-neutral-900 dark:text-white block">Folder Transfer Protocol</span>
-            <p>Relative paths only with traversal guard, empty directory preservation, and collision renaming.</p>
-          </div>
-
-          <div className="p-3 rounded-lg bg-white dark:bg-neutral-900 border border-neutral-200/60 dark:border-neutral-800 space-y-1">
-            <span className="font-medium text-neutral-900 dark:text-white block">SQLite Persistence</span>
-            <p>Versioned migrations storing transfers, nested file manifests, queue state, and analytics.</p>
+            <p>No telemetry, no external servers. Standard SQLite holds public peer metadata &amp; redacted audit logs only.</p>
           </div>
         </div>
 
         <div className="pt-2 text-[11px] text-neutral-400 flex items-center justify-between">
-          <span>BeamDrop Desktop v1.0.0 (Phase 5 Build)</span>
-          <span className="font-mono">Runtime: {isNative ? 'Tauri 2.0.0 / Rust' : 'Web Preview / Vite 8'}</span>
+          <span>BeamDrop Desktop v1.0.0 (Phase 6 Hardened Build)</span>
+          <span className="font-mono flex items-center gap-1.5">
+            <Layers className="w-3.5 h-3.5" />
+            {isNative ? 'Tauri 2.0.0 / Rust' : 'Web Preview / Vite 8'}
+          </span>
         </div>
       </section>
     </div>

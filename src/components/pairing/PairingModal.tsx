@@ -141,6 +141,12 @@ export const PairingModal: React.FC<PairingModalProps> = ({ isOpen, onClose }) =
             <p className="text-[11px] text-neutral-500 dark:text-neutral-400">
               Ensure this 6-digit number matches the scanner screen before accepting.
             </p>
+            <div className="pt-2 border-t border-neutral-200/60 dark:border-neutral-700/60 flex items-center justify-between text-[11px] text-neutral-500">
+              <span>Local Key Fingerprint:</span>
+              <span className="font-mono font-medium text-neutral-800 dark:text-neutral-200">
+                {activeSession.fingerprint}
+              </span>
+            </div>
           </div>
         )}
 

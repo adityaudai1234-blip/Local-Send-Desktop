@@ -657,6 +657,30 @@ impl TransferManager {
         count
     }
 
+    pub fn cancel_transfers_for_device(&self, device_id: &str) -> usize {
+        let matching_ids: Vec<String> = {
+            let lock = self.active_sessions.lock().unwrap();
+            lock.iter()
+                .filter(|(_, s)| {
+                    (s.sender_device_id == device_id || s.recipient_device_id == device_id)
+                        && !matches!(
+                            s.status,
+                            TransferStatus::Completed | TransferStatus::Cancelled | TransferStatus::Failed
+                        )
+                })
+                .map(|(id, _)| id.clone())
+                .collect()
+        };
+
+        let mut cancelled = 0;
+        for id in matching_ids {
+            if self.cancel_transfer(&id).is_ok() {
+                cancelled += 1;
+            }
+        }
+        cancelled
+    }
+
     pub fn pause_all_transfers(&self) -> usize {
         let ids: Vec<String> = {
             let lock = self.active_sessions.lock().unwrap();

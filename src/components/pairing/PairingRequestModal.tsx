@@ -46,6 +46,16 @@ export const PairingRequestModal: React.FC = () => {
           </div>
         </div>
 
+        {currentRequest.identityWarning && (
+          <div className="p-3 rounded-xl border border-rose-500/40 bg-rose-500/10 flex items-start gap-2.5 text-xs text-rose-700 dark:text-rose-300">
+            <ShieldAlert className="w-4 h-4 shrink-0 mt-0.5 text-rose-500" />
+            <div className="space-y-0.5">
+              <span className="font-semibold block">Identity Key Change Detected</span>
+              <span className="text-[11px]">{currentRequest.identityWarning}</span>
+            </div>
+          </div>
+        )}
+
         {/* Security & Verification Box */}
         <div className="p-3.5 rounded-xl border border-neutral-200/80 dark:border-neutral-700/80 bg-white dark:bg-neutral-900/60 space-y-2.5">
           <div className="flex items-center justify-between">
@@ -75,7 +85,7 @@ export const PairingRequestModal: React.FC = () => {
             <div className="flex justify-between">
               <span>Key Fingerprint:</span>
               <span className="font-mono text-neutral-700 dark:text-neutral-300">
-                {currentRequest.fromFingerprint}
+                {currentRequest.fromFingerprint} (v{currentRequest.keyVersion ?? 1})
               </span>
             </div>
             <div className="flex justify-between">

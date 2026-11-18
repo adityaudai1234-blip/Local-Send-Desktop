@@ -1,18 +1,21 @@
+pub mod audit;
 pub mod commands;
 pub mod discovery;
-pub mod models;
-pub mod services;
-pub mod pairing;
-pub mod security;
-pub mod trusted_devices;
-pub mod networking;
-pub mod protocol;
 pub mod file_system;
-pub mod transfers;
+pub mod filesystem_security;
 pub mod folders;
 pub mod history;
+pub mod models;
+pub mod networking;
 pub mod notifications;
+pub mod pairing;
+pub mod privacy;
+pub mod protocol;
+pub mod security;
+pub mod services;
 pub mod system_tray;
+pub mod transfers;
+pub mod trusted_devices;
 
 use commands::*;
 use services::AppState;
@@ -29,7 +32,9 @@ pub fn run() {
             let state = app.state::<AppState>();
             let local = state.get_local_device();
             let trusted_mgr = state.trusted_devices_manager.clone();
-            state.connection_manager.start_background_tasks(local, trusted_mgr, handle.clone());
+            state
+                .connection_manager
+                .start_background_tasks(local, trusted_mgr, handle.clone());
             state.transfer_manager.set_app_handle(handle.clone());
 
             // Clean up expired `.part` files on startup
@@ -114,6 +119,22 @@ pub fn run() {
             get_transfer_statistics,
             set_notifications_enabled,
             get_notifications_enabled,
+            // Phase 6 Security, Encryption, Privacy & Audit Commands
+            get_security_status,
+            get_device_identity,
+            get_device_fingerprint,
+            verify_device_identity,
+            revoke_device,
+            rotate_device_keys,
+            get_trusted_device_security,
+            get_active_secure_sessions,
+            get_security_settings,
+            update_security_settings,
+            get_security_audit_log,
+            search_security_events,
+            clear_security_audit_log,
+            get_secure_storage_status,
+            run_security_self_test,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BeamDrop tauri application");
