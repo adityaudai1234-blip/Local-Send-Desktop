@@ -273,7 +273,10 @@ export const useTransferStore = create<TransferStoreState>((set, get) => ({
                   progress: event.percentage,
                   bytesTransferred: event.bytesTransferred,
                   speed: event.speedBytesPerSec,
+                  averageSpeedBps: event.averageSpeedBps ?? t.averageSpeedBps,
+                  peakSpeedBps: event.peakSpeedBps ?? t.peakSpeedBps,
                   etaSeconds: event.estimatedSecondsRemaining,
+                  reliableEta: event.reliableEta ?? event.estimatedSecondsRemaining !== undefined,
                   status: event.status,
                 }
               : t

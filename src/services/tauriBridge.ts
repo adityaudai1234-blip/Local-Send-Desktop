@@ -30,6 +30,18 @@ import type {
   SecuritySelfTestReport,
   TrustedDeviceSecurityInfo,
 } from '../types/security';
+import type {
+  DiskThroughputMetrics,
+  NetworkQualityEvent,
+  NetworkThroughputMetrics,
+  ThroughputHistoryPoint,
+  TransferOptimizationSettings,
+  TransferPerformanceMetrics,
+  TransferQueueMetrics,
+  TransferRecoveryStatus,
+  TransferResourceUsage,
+  TransferSpeedDetails,
+} from '../types/performance';
 
 // Detect if running inside Tauri 2 native desktop webview
 export const isTauriEnvironment = (): boolean => {
@@ -290,6 +302,61 @@ let webSelectedFolders: FolderMetadata[] = [];
 const webActiveTransfers: Record<string, TransferSession> = {};
 const webTransferTimers: Record<string, number> = {};
 let webPendingIncomingTransfers: IncomingTransferProposal[] = [];
+
+// Phase 7 Web Optimization & Rolling Throughput Tracking State
+const LOCAL_STORAGE_PERF_SETTINGS_KEY = 'beamdrop_phase7_opt_settings_v1';
+const webSpeedSamples: Record<string, number[]> = {};
+const webPeakSpeeds: Record<string, number> = {};
+const webThroughputHistory: ThroughputHistoryPoint[] = [];
+let webPeakUploadBps = 0;
+let webPeakDownloadBps = 0;
+let webTotalDiskReadBytes = 0;
+let webTotalDiskWriteBytes = 0;
+let webRetryCount = 0;
+let webFailedCount = 0;
+let webStarvationBoosts = 0;
+let webCurrentChunkBytes = 256 * 1024;
+let webLastPerfEmitAt = 0;
+
+function getDefaultOptimizationSettings(): TransferOptimizationSettings {
+  return {
+    maxConcurrentTransfers: 3,
+    maxConcurrentFileOps: 4,
+    maxConcurrentConnections: 8,
+    maxConcurrentChunkOps: 4,
+    adaptiveChunkingEnabled: true,
+    defaultChunkSizeKb: 256,
+    performanceGraphEnabled: true,
+    autoRetryEnabled: true,
+    maxRetries: 3,
+    defaultPriority: 'normal',
+    continueInBackground: true,
+  };
+}
+
+function loadWebOptimizationSettings(): TransferOptimizationSettings {
+  const def = getDefaultOptimizationSettings();
+  if (typeof window === 'undefined') return def;
+  const raw = localStorage.getItem(LOCAL_STORAGE_PERF_SETTINGS_KEY);
+  if (raw) {
+    try {
+      const parsed = JSON.parse(raw) as Partial<TransferOptimizationSettings>;
+      return {
+        ...def,
+        ...parsed,
+        maxConcurrentTransfers: Math.max(1, Math.min(16, parsed.maxConcurrentTransfers ?? def.maxConcurrentTransfers)),
+        maxConcurrentFileOps: Math.max(1, Math.min(16, parsed.maxConcurrentFileOps ?? def.maxConcurrentFileOps)),
+        maxConcurrentConnections: Math.max(1, Math.min(32, parsed.maxConcurrentConnections ?? def.maxConcurrentConnections)),
+        maxConcurrentChunkOps: Math.max(1, Math.min(16, parsed.maxConcurrentChunkOps ?? def.maxConcurrentChunkOps)),
+        defaultChunkSizeKb: Math.max(64, Math.min(4096, parsed.defaultChunkSizeKb ?? def.defaultChunkSizeKb)),
+        maxRetries: Math.max(0, Math.min(10, parsed.maxRetries ?? def.maxRetries)),
+      };
+    } catch {
+      // ignore
+    }
+  }
+  return def;
+}
 
 function getPriorityWeight(p?: TransferPriority): number {
   if (p === 'high') return 3;
@@ -1173,12 +1240,18 @@ export const tauriBridge = {
 
   _runWebTransferSimulation(session: TransferSession) {
     webActiveTransfers[session.transferId] = session;
+    webSpeedSamples[session.transferId] = [];
+    webPeakSpeeds[session.transferId] = 0;
     upsertWebSession(session);
 
     const totalBytes = Math.max(session.totalBytes, 1024);
     if (webTransferTimers[session.transferId]) {
       clearInterval(webTransferTimers[session.transferId]);
     }
+
+    let lastTick = performance.now();
+    const startWall = lastTick;
+    let ewmaBps = 0;
 
     const interval = window.setInterval(() => {
       const current = webActiveTransfers[session.transferId];
@@ -1193,9 +1266,48 @@ export const tauriBridge = {
         return;
       }
 
-      const step = Math.max(Math.round(totalBytes / 10), 1_500_000);
-      current.bytesTransferred = Math.min(totalBytes, current.bytesTransferred + step);
-      current.speedBytesPerSec = current.priority === 'high' ? 26_500_000 : current.priority === 'low' ? 8_400_000 : 18_500_000;
+      const nowTick = performance.now();
+      const dtSec = Math.max(0.05, (nowTick - lastTick) / 1000);
+      lastTick = nowTick;
+
+      const opt = loadWebOptimizationSettings();
+      const targetSlice = Math.max(Math.round(totalBytes / 14), 1_400_000);
+      const prevBytes = current.bytesTransferred;
+      current.bytesTransferred = Math.min(totalBytes, current.bytesTransferred + targetSlice);
+      const deltaBytes = current.bytesTransferred - prevBytes;
+
+      if (current.direction === 'outgoing') {
+        webTotalDiskReadBytes += deltaBytes;
+      } else {
+        webTotalDiskWriteBytes += deltaBytes;
+      }
+
+      // Compute authentic rolling EWMA speed from actual byte delta and elapsed interval
+      const instantBps = Math.round(deltaBytes / dtSec);
+      ewmaBps = ewmaBps === 0 ? instantBps : Math.round(0.35 * instantBps + 0.65 * ewmaBps);
+      current.speedBytesPerSec = ewmaBps;
+
+      const samples = webSpeedSamples[session.transferId] || [];
+      samples.push(ewmaBps);
+      if (samples.length > 16) samples.shift();
+      webSpeedSamples[session.transferId] = samples;
+
+      webPeakSpeeds[session.transferId] = Math.max(webPeakSpeeds[session.transferId] || 0, ewmaBps);
+      if (current.direction === 'outgoing') {
+        webPeakUploadBps = Math.max(webPeakUploadBps, ewmaBps);
+      } else {
+        webPeakDownloadBps = Math.max(webPeakDownloadBps, ewmaBps);
+      }
+
+      if (opt.adaptiveChunkingEnabled) {
+        webCurrentChunkBytes = ewmaBps > 20_000_000 ? 524_288 : ewmaBps > 8_000_000 ? 262_144 : 131_072;
+      } else {
+        webCurrentChunkBytes = opt.defaultChunkSizeKb * 1024;
+      }
+
+      const avgSpeed = samples.length > 0
+        ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length)
+        : ewmaBps;
 
       if (current.bytesTransferred >= totalBytes) {
         clearInterval(interval);
@@ -1214,11 +1326,15 @@ export const tauriBridge = {
         }));
         upsertWebSession(current);
         this.emitWebEvent('transfer-completed', current);
+        this._emitWebPhase7Snapshots();
       } else {
         const remaining = totalBytes - current.bytesTransferred;
-        current.estimatedSecondsRemaining = Math.max(1, Math.ceil(remaining / current.speedBytesPerSec));
+        const elapsedMs = nowTick - startWall;
+        const reliableEta = totalBytes >= 262_144 && samples.length >= 2 && elapsedMs >= 450 && ewmaBps > 1024;
+        current.estimatedSecondsRemaining = reliableEta ? Math.max(1, Math.ceil(remaining / ewmaBps)) : undefined;
         upsertWebSession(current);
-        this.emitWebEvent('transfer-progress', {
+
+        const progressPayload = {
           transferId: current.transferId,
           fileId: current.files[0]?.fileId || 'f1',
           fileName: current.files[0]?.name || current.rootFolderName || 'transfer.bin',
@@ -1228,13 +1344,57 @@ export const tauriBridge = {
           totalBytes: session.totalBytes,
           percentage: Math.min(100, Math.round((current.bytesTransferred / totalBytes) * 100)),
           speedBytesPerSec: current.speedBytesPerSec,
+          averageSpeedBps: avgSpeed,
+          peakSpeedBps: webPeakSpeeds[session.transferId] || ewmaBps,
+          remainingBytes: remaining,
           estimatedSecondsRemaining: current.estimatedSecondsRemaining,
+          reliableEta,
+          chunkSizeBytes: webCurrentChunkBytes,
           status: 'transferring',
-        });
+        };
+        this.emitWebEvent('transfer-progress', progressPayload);
+        this.emitWebEvent('transfer_speed_update', progressPayload);
+        this._emitWebPhase7Snapshots();
       }
     }, 260);
 
     webTransferTimers[session.transferId] = interval;
+  },
+
+  _emitWebPhase7Snapshots() {
+    const now = Date.now();
+    if (now - webLastPerfEmitAt < 250) return;
+    webLastPerfEmitAt = now;
+
+    Promise.all([
+      this.getTransferPerformanceMetrics(),
+      this.getNetworkThroughput(),
+      this.getTransferQueueMetrics(),
+    ]).then(([perf, net, queueMetrics]) => {
+      webThroughputHistory.push({
+        timestamp: now,
+        uploadBps: net.uploadBps,
+        downloadBps: net.downloadBps,
+        diskWriteBps: perf.diskWriteSpeedBps,
+      });
+      if (webThroughputHistory.length > 60) {
+        webThroughputHistory.shift();
+      }
+      net.history = [...webThroughputHistory];
+      this.emitWebEvent('transfer_performance_update', perf);
+      this.emitWebEvent('network_throughput_update', net);
+      this.emitWebEvent('transfer_queue_update', queueMetrics);
+      const qEvent: NetworkQualityEvent = {
+        quality: net.networkQuality,
+        averageLatencyMs: net.averageLatencyMs,
+        activeConnections: net.activeConnections,
+        congestionDetected: net.networkQuality === 'congested' || net.networkQuality === 'degraded',
+        recommendedChunkSizeBytes: webCurrentChunkBytes,
+        interfaceIp: net.interfaceIp,
+        timestamp: now,
+      };
+      this.emitWebEvent('network_quality_update', qEvent);
+    });
   },
 
   async startFileTransfer(params: {
@@ -1567,6 +1727,7 @@ export const tauriBridge = {
       totalBytes: s.totalBytes,
       bytesTransferred: s.bytesTransferred,
       speedBytesPerSec: s.speedBytesPerSec,
+      estimatedSecondsRemaining: s.estimatedSecondsRemaining,
       isFolder: Boolean(s.isFolder),
       fileCount: s.files.length,
       enqueuedAt: s.startedAt,
@@ -2391,6 +2552,238 @@ export const tauriBridge = {
     });
 
     return { passedAll, ranAt: now, checks };
+  },
+
+  // -------------------------------------------------------------
+  // PHASE 7: Performance, Adaptive Chunking & Optimization APIs
+  // -------------------------------------------------------------
+
+  async getTransferPerformanceMetrics(): Promise<TransferPerformanceMetrics> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferPerformanceMetrics>('get_transfer_performance_metrics');
+    }
+    const opt = loadWebOptimizationSettings();
+    const list = Object.values(webActiveTransfers);
+    const active = list.filter(s => ['transferring', 'preparing', 'connecting', 'verifying'].includes(s.status));
+    const queued = list.filter(s => s.status === 'queued' || s.status === 'waiting_for_approval');
+    const paused = list.filter(s => s.status === 'paused');
+
+    const up = active.filter(s => s.direction === 'outgoing').reduce((acc, s) => acc + s.speedBytesPerSec, 0);
+    const down = active.filter(s => s.direction === 'incoming').reduce((acc, s) => acc + s.speedBytesPerSec, 0);
+    const combined = up + down;
+    const peak = Math.max(webPeakUploadBps, webPeakDownloadBps, combined);
+    const nonZero = webThroughputHistory.map(p => p.uploadBps + p.downloadBps).filter(v => v > 0);
+    const avg = active.length > 0
+      ? combined
+      : nonZero.length > 0
+        ? Math.round(nonZero.reduce((a, b) => a + b, 0) / nonZero.length)
+        : 0;
+
+    return {
+      activeTransfers: active.length,
+      queuedTransfers: queued.length,
+      pausedTransfers: paused.length,
+      totalBytesTransferred: webTotalDiskReadBytes + webTotalDiskWriteBytes,
+      totalUploadSpeedBps: up,
+      totalDownloadSpeedBps: down,
+      combinedThroughputBps: combined,
+      averageSpeedBps: avg,
+      peakSpeedBps: peak,
+      diskReadSpeedBps: up,
+      diskWriteSpeedBps: down,
+      retryCount: webRetryCount,
+      failedCount: webFailedCount,
+      currentChunkSizeBytes: webCurrentChunkBytes,
+      adaptiveChunkingActive: opt.adaptiveChunkingEnabled,
+      queueDepth: queued.length + active.length + paused.length,
+      activeBufferBytes: active.length * webCurrentChunkBytes,
+      updatedAt: Date.now(),
+    };
+  },
+
+  async getNetworkThroughput(): Promise<NetworkThroughputMetrics> {
+    if (isTauriEnvironment()) {
+      return await invoke<NetworkThroughputMetrics>('get_network_throughput');
+    }
+    const dev = getInitialWebDevice();
+    const activeConns = Object.values(webConnections).filter(c => c.state === 'connected');
+    const list = Object.values(webActiveTransfers).filter(s => s.status === 'transferring');
+    const up = list.filter(s => s.direction === 'outgoing').reduce((acc, s) => acc + s.speedBytesPerSec, 0);
+    const down = list.filter(s => s.direction === 'incoming').reduce((acc, s) => acc + s.speedBytesPerSec, 0);
+    const avgLatency = activeConns.length > 0
+      ? Math.round(activeConns.reduce((acc, c) => acc + c.latencyMs, 0) / activeConns.length)
+      : 0;
+
+    return {
+      uploadBps: up,
+      downloadBps: down,
+      totalTxBytes: webTxBytes + webTotalDiskReadBytes,
+      totalRxBytes: webRxBytes + webTotalDiskWriteBytes,
+      peakUploadBps: webPeakUploadBps,
+      peakDownloadBps: webPeakDownloadBps,
+      activeConnections: activeConns.length,
+      networkQuality: avgLatency > 80 ? 'degraded' : avgLatency <= 12 ? 'excellent' : 'good',
+      averageLatencyMs: avgLatency,
+      congestionEvents: 0,
+      interfaceIp: dev.ipAddresses[0] || '192.168.1.105',
+      interfaceChangedAt: null,
+      history: [...webThroughputHistory],
+    };
+  },
+
+  async getDiskThroughput(): Promise<DiskThroughputMetrics> {
+    if (isTauriEnvironment()) {
+      return await invoke<DiskThroughputMetrics>('get_disk_throughput');
+    }
+    const active = Object.values(webActiveTransfers).filter(s => s.status === 'transferring');
+    const readBps = active.filter(s => s.direction === 'outgoing').reduce((a, s) => a + s.speedBytesPerSec, 0);
+    const writeBps = active.filter(s => s.direction === 'incoming').reduce((a, s) => a + s.speedBytesPerSec, 0);
+    return {
+      readBps,
+      writeBps,
+      totalReadBytes: webTotalDiskReadBytes,
+      totalWriteBytes: webTotalDiskWriteBytes,
+      averageWriteLatencyUs: writeBps > 0 ? 420 : 0,
+      bufferedWriteEnabled: true,
+      writeBufferSizeBytes: 262144,
+      availableDiskBytes: null,
+      downloadDirPath: getWebDownloadDir(),
+    };
+  },
+
+  async getTransferSpeedDetails(transferId: string): Promise<TransferSpeedDetails> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferSpeedDetails>('get_transfer_speed_details', { transferId });
+    }
+    const s = await this.getTransferDetails(transferId);
+    if (!s) throw new Error(`Transfer ${transferId} not found`);
+    const samples = webSpeedSamples[transferId] || (s.speedBytesPerSec > 0 ? [s.speedBytesPerSec] : []);
+    const avg = samples.length > 0 ? Math.round(samples.reduce((a, b) => a + b, 0) / samples.length) : s.speedBytesPerSec;
+    const peak = Math.max(webPeakSpeeds[transferId] || 0, s.speedBytesPerSec);
+    return {
+      transferId: s.transferId,
+      currentSpeedBps: s.speedBytesPerSec,
+      averageSpeedBps: avg,
+      peakSpeedBps: peak,
+      totalBytes: s.totalBytes,
+      bytesTransferred: s.bytesTransferred,
+      remainingBytes: Math.max(0, s.totalBytes - s.bytesTransferred),
+      estimatedSecondsRemaining: s.estimatedSecondsRemaining ?? null,
+      reliableEta: s.estimatedSecondsRemaining !== undefined && s.estimatedSecondsRemaining !== null,
+      recentSamplesBps: samples,
+      chunkSizeBytes: webCurrentChunkBytes,
+      retryAttempts: 0,
+      status: s.status,
+    };
+  },
+
+  async getTransferOptimizationSettings(): Promise<TransferOptimizationSettings> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferOptimizationSettings>('get_transfer_optimization_settings');
+    }
+    return loadWebOptimizationSettings();
+  },
+
+  async updateTransferOptimizationSettings(
+    settings: TransferOptimizationSettings
+  ): Promise<TransferOptimizationSettings> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferOptimizationSettings>('update_transfer_optimization_settings', { settings });
+    }
+    const clean: TransferOptimizationSettings = {
+      ...settings,
+      maxConcurrentTransfers: Math.max(1, Math.min(16, settings.maxConcurrentTransfers)),
+      maxConcurrentFileOps: Math.max(1, Math.min(16, settings.maxConcurrentFileOps)),
+      maxConcurrentConnections: Math.max(1, Math.min(32, settings.maxConcurrentConnections)),
+      maxConcurrentChunkOps: Math.max(1, Math.min(16, settings.maxConcurrentChunkOps)),
+      defaultChunkSizeKb: Math.max(64, Math.min(4096, settings.defaultChunkSizeKb)),
+      maxRetries: Math.max(0, Math.min(10, settings.maxRetries)),
+    };
+    if (typeof window !== 'undefined') {
+      localStorage.setItem(LOCAL_STORAGE_PERF_SETTINGS_KEY, JSON.stringify(clean));
+    }
+    webCurrentChunkBytes = clean.defaultChunkSizeKb * 1024;
+    this._emitWebPhase7Snapshots();
+    return clean;
+  },
+
+  async getTransferQueueMetrics(): Promise<TransferQueueMetrics> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferQueueMetrics>('get_transfer_queue_metrics');
+    }
+    const opt = loadWebOptimizationSettings();
+    const queue = await this.getTransferQueue();
+    return {
+      totalQueued: queue.length,
+      activeCount: queue.filter(q => ['transferring', 'preparing', 'connecting'].includes(q.status)).length,
+      waitingCount: queue.filter(q => ['queued', 'paused', 'waiting_for_approval'].includes(q.status)).length,
+      highPriorityCount: queue.filter(q => q.priority === 'high').length,
+      normalPriorityCount: queue.filter(q => q.priority === 'normal').length,
+      lowPriorityCount: queue.filter(q => q.priority === 'low').length,
+      starvationBoostsApplied: webStarvationBoosts,
+      totalQueuedBytes: queue.reduce((a, q) => a + Math.max(0, q.totalBytes - q.bytesTransferred), 0),
+      maxConcurrentTransfers: opt.maxConcurrentTransfers,
+    };
+  },
+
+  async getTransferResourceUsage(): Promise<TransferResourceUsage> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferResourceUsage>('get_transfer_resource_usage');
+    }
+    const opt = loadWebOptimizationSettings();
+    const active = Object.values(webActiveTransfers).filter(s => s.status === 'transferring');
+    const activeConns = Object.values(webConnections).filter(c => c.state === 'connected').length;
+    return {
+      activeFileHandles: active.length,
+      activeChunkBuffers: active.length,
+      pooledBuffersAvailable: Math.max(0, 6 - active.length),
+      bufferMemoryBytes: active.length * webCurrentChunkBytes,
+      peakBufferMemoryBytes: Math.max(active.length * webCurrentChunkBytes, webCurrentChunkBytes),
+      activeConcurrentTransfers: active.length,
+      maxConcurrentTransfers: opt.maxConcurrentTransfers,
+      activeFileOps: active.length,
+      maxConcurrentFileOps: opt.maxConcurrentFileOps,
+      activeNetworkConnections: activeConns,
+      maxConcurrentConnections: opt.maxConcurrentConnections,
+      activeChunkOps: active.length,
+      maxConcurrentChunkOps: opt.maxConcurrentChunkOps,
+    };
+  },
+
+  async getTransferRecoveryStatus(): Promise<TransferRecoveryStatus> {
+    if (isTauriEnvironment()) {
+      return await invoke<TransferRecoveryStatus>('get_transfer_recovery_status');
+    }
+    const items = await this.getRecoverableTransfers();
+    return {
+      recoverableCount: items.length,
+      resumableCount: items.filter(i => i.canResume).length,
+      rejectedCount: items.filter(i => !i.canResume).length,
+      totalRecoverableBytes: items.reduce((a, i) => a + i.totalBytes, 0),
+      corruptedPartFilesCleaned: 0,
+      items,
+    };
+  },
+
+  async optimizeTransferQueue(): Promise<QueueItemInfo[]> {
+    if (isTauriEnvironment()) {
+      return await invoke<QueueItemInfo[]>('optimize_transfer_queue');
+    }
+    const now = Date.now();
+    const queue = await this.getTransferQueue();
+    queue.sort((a, b) => {
+      const score = (item: QueueItemInfo) => {
+        const w = item.priority === 'high' ? 300 : item.priority === 'low' ? 100 : 200;
+        const aging = Math.min(250, Math.floor(Math.max(0, now - item.enqueuedAt) / 15000) * 25);
+        const fastLane = item.totalBytes > 0 && item.totalBytes <= 1_048_576 ? 40 : 0;
+        if (aging >= 100) webStarvationBoosts += 1;
+        return w + aging + fastLane;
+      };
+      return score(b) - score(a) || a.enqueuedAt - b.enqueuedAt;
+    });
+    const reindexed = queue.map((q, idx) => ({ ...q, queuePosition: idx + 1 }));
+    this._emitWebPhase7Snapshots();
+    return reindexed;
   },
 
   // Event Subscription helper

@@ -97,7 +97,12 @@ export interface TransferProgressPayload {
   totalBytes: number;
   percentage: number;
   speedBytesPerSec: number;
+  averageSpeedBps?: number;
+  peakSpeedBps?: number;
+  remainingBytes?: number;
   estimatedSecondsRemaining?: number;
+  reliableEta?: boolean;
+  chunkSizeBytes?: number;
   status: TransferStatus;
 }
 
@@ -133,6 +138,7 @@ export interface QueueItemInfo {
   totalBytes: number;
   bytesTransferred: number;
   speedBytesPerSec: number;
+  estimatedSecondsRemaining?: number;
   isFolder: boolean;
   fileCount: number;
   enqueuedAt: number;
@@ -223,6 +229,9 @@ export interface FileTransferItem {
   errorCode?: string;
   filesCount?: number;
   etaSeconds?: number;
+  averageSpeedBps?: number;
+  peakSpeedBps?: number;
+  reliableEta?: boolean;
   checksum?: string;
   verified?: boolean;
 }

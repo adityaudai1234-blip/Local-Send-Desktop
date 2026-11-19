@@ -1,3 +1,4 @@
+pub mod adaptive_chunking;
 pub mod audit;
 pub mod commands;
 pub mod discovery;
@@ -5,15 +6,21 @@ pub mod file_system;
 pub mod filesystem_security;
 pub mod folders;
 pub mod history;
+pub mod io_optimizer;
 pub mod models;
+pub mod network_optimizer;
 pub mod networking;
 pub mod notifications;
 pub mod pairing;
+pub mod performance;
 pub mod privacy;
 pub mod protocol;
 pub mod security;
 pub mod services;
 pub mod system_tray;
+pub mod throughput_monitor;
+pub mod transfer_optimizer;
+pub mod transfer_scheduler;
 pub mod transfers;
 pub mod trusted_devices;
 
@@ -135,6 +142,17 @@ pub fn run() {
             clear_security_audit_log,
             get_secure_storage_status,
             run_security_self_test,
+            // Phase 7 Performance, Chunking, Throughput & Optimization Commands
+            get_transfer_performance_metrics,
+            get_network_throughput,
+            get_disk_throughput,
+            get_transfer_speed_details,
+            get_transfer_optimization_settings,
+            update_transfer_optimization_settings,
+            get_transfer_queue_metrics,
+            get_transfer_resource_usage,
+            get_transfer_recovery_status,
+            optimize_transfer_queue,
         ])
         .run(tauri::generate_context!())
         .expect("error while running BeamDrop tauri application");

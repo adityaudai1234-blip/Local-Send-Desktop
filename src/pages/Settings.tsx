@@ -9,13 +9,16 @@ import {
   Shield,
   Lock,
   AlertTriangle,
+  Gauge,
 } from 'lucide-react';
 import { useSettingsStore } from '../stores/settingsStore';
 import { useDeviceStore } from '../stores/deviceStore';
 import { useTransferStore } from '../stores/transferStore';
 import { useSecurityStore } from '../stores/securityStore';
+import { usePerformanceStore } from '../stores/performanceStore';
 import { isTauriEnvironment } from '../services/tauriBridge';
 import type { SecurityPrivacySettings } from '../types/security';
+import type { TransferPriority } from '../types/transfer';
 
 export const Settings: React.FC = () => {
   const {
@@ -40,6 +43,13 @@ export const Settings: React.FC = () => {
     updatePrivacySettings,
     refreshAll: refreshSecurity,
   } = useSecurityStore();
+  const {
+    optimizationSettings,
+    updateSettings: updatePerfSettings,
+    refreshAll: refreshPerformance,
+    isSavingSettings,
+    settingsSavedAt,
+  } = usePerformanceStore();
 
   const [deviceNameInput, setDeviceNameInput] = useState(localDevice?.name || '');
   const [nameSavedNotice, setNameSavedNotice] = useState(false);
@@ -51,7 +61,8 @@ export const Settings: React.FC = () => {
 
   useEffect(() => {
     refreshSecurity();
-  }, [refreshSecurity]);
+    refreshPerformance();
+  }, [refreshSecurity, refreshPerformance]);
 
   const handlePrivacyToggle = async (patch: Partial<SecurityPrivacySettings>) => {
     const base: SecurityPrivacySettings = privacySettings || {
@@ -493,7 +504,199 @@ export const Settings: React.FC = () => {
         </div>
       </section>
 
-      {/* 7. Live Security & Cryptographic Architecture Summary */}
+      {/* 7. Performance & Transfer Optimization (Phase 7) */}
+      <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/60 space-y-4">
+        <div className="flex items-center justify-between">
+          <div>
+            <h3 className="text-sm font-semibold text-neutral-900 dark:text-white flex items-center gap-2">
+              <Gauge className="w-4 h-4 text-cyan-500" />
+              <span>Performance &amp; Transfer Optimization</span>
+            </h3>
+            <p className="text-xs text-neutral-500">
+              Tune concurrency slots, adaptive chunk sizing, throughput graph telemetry, auto-retry limits, and background persistence.
+            </p>
+          </div>
+          {settingsSavedAt && !isSavingSettings && (
+            <span className="text-[11px] font-medium text-emerald-600 dark:text-emerald-400 flex items-center gap-1">
+              <Check className="w-3.5 h-3.5" />
+              Saved
+            </span>
+          )}
+        </div>
+
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs">
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Max Simultaneous Transfers
+              </span>
+              <span className="text-neutral-500">Bounded transfer job slots (1–16).</span>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={optimizationSettings.maxConcurrentTransfers}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isNaN(v)) updatePerfSettings({ maxConcurrentTransfers: Math.max(1, Math.min(16, v)) });
+              }}
+              className="w-20 px-2 py-1 font-mono tabular-nums rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Max Simultaneous File Ops
+              </span>
+              <span className="text-neutral-500">Concurrent disk readers/writers (1–16).</span>
+            </div>
+            <input
+              type="number"
+              min={1}
+              max={16}
+              value={optimizationSettings.maxConcurrentFileOps}
+              onChange={(e) => {
+                const v = parseInt(e.target.value, 10);
+                if (!Number.isNaN(v)) updatePerfSettings({ maxConcurrentFileOps: Math.max(1, Math.min(16, v)) });
+              }}
+              className="w-20 px-2 py-1 font-mono tabular-nums rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Default Transfer Priority
+              </span>
+              <span className="text-neutral-500">Priority assigned to new transfers.</span>
+            </div>
+            <select
+              aria-label="Default transfer priority"
+              value={optimizationSettings.defaultPriority}
+              onChange={(e) => updatePerfSettings({ defaultPriority: e.target.value as TransferPriority })}
+              className="px-2.5 py-1 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white"
+            >
+              <option value="high">High</option>
+              <option value="normal">Normal</option>
+              <option value="low">Low</option>
+            </select>
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Default Chunk Size (Advanced)
+              </span>
+              <span className="text-neutral-500">Base chunk window between 64 KB and 4096 KB.</span>
+            </div>
+            <select
+              aria-label="Default chunk size"
+              value={optimizationSettings.defaultChunkSizeKb}
+              onChange={(e) => updatePerfSettings({ defaultChunkSizeKb: parseInt(e.target.value, 10) })}
+              className="px-2.5 py-1 font-mono tabular-nums rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white"
+            >
+              <option value={64}>64 KB</option>
+              <option value={128}>128 KB</option>
+              <option value={256}>256 KB (Default)</option>
+              <option value={512}>512 KB</option>
+              <option value={1024}>1024 KB (1 MB)</option>
+              <option value={2048}>2048 KB (2 MB)</option>
+              <option value={4096}>4096 KB (4 MB)</option>
+            </select>
+          </div>
+        </div>
+
+        <div className="space-y-3 text-xs pt-1">
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Enable Adaptive Chunk Sizing
+              </span>
+              <span className="text-neutral-500">
+                Dynamically scales chunk sizes between 64 KB and 4 MB based on LAN throughput, disk write latency, and retries.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={optimizationSettings.adaptiveChunkingEnabled}
+              onChange={(e) => updatePerfSettings({ adaptiveChunkingEnabled: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Enable Real-Time Performance Graph
+              </span>
+              <span className="text-neutral-500">
+                Render live upload/download speed curves inside the Transfers view.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={optimizationSettings.performanceGraphEnabled}
+              onChange={(e) => updatePerfSettings({ performanceGraphEnabled: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+
+          <div className="flex items-center justify-between py-2 border-b border-neutral-100 dark:border-neutral-800">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Automatic Retry on Interrupted Transfers
+              </span>
+              <span className="text-neutral-500">
+                Retry interrupted streams up to configured limit before marking failed.
+              </span>
+            </div>
+            <div className="flex items-center gap-3">
+              <div className="flex items-center gap-1.5 font-mono tabular-nums text-[11px] text-neutral-500">
+                <span>Max:</span>
+                <input
+                  type="number"
+                  min={0}
+                  max={10}
+                  disabled={!optimizationSettings.autoRetryEnabled}
+                  value={optimizationSettings.maxRetries}
+                  onChange={(e) => {
+                    const v = parseInt(e.target.value, 10);
+                    if (!Number.isNaN(v)) updatePerfSettings({ maxRetries: Math.max(0, Math.min(10, v)) });
+                  }}
+                  className="w-14 px-2 py-0.5 rounded border border-neutral-300 dark:border-neutral-700 bg-white dark:bg-neutral-800 text-neutral-900 dark:text-white disabled:opacity-40"
+                />
+              </div>
+              <input
+                type="checkbox"
+                checked={optimizationSettings.autoRetryEnabled}
+                onChange={(e) => updatePerfSettings({ autoRetryEnabled: e.target.checked })}
+                className="w-4 h-4 rounded text-neutral-900"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between py-2">
+            <div>
+              <span className="font-medium text-neutral-900 dark:text-white block">
+                Continue Transfers in Background
+              </span>
+              <span className="text-neutral-500">
+                Keep active transfers running cleanly while the window is minimized to tray.
+              </span>
+            </div>
+            <input
+              type="checkbox"
+              checked={optimizationSettings.continueInBackground}
+              onChange={(e) => updatePerfSettings({ continueInBackground: e.target.checked })}
+              className="w-4 h-4 rounded text-neutral-900"
+            />
+          </div>
+        </div>
+      </section>
+
+      {/* 8. Live Security & Cryptographic Architecture Summary */}
       <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-neutral-50/50 dark:bg-neutral-950/40 space-y-3 text-xs">
         <div className="flex items-center gap-2 text-neutral-900 dark:text-white font-semibold">
           <Lock className="w-4 h-4 text-emerald-500" />

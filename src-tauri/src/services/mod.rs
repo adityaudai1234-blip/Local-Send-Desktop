@@ -90,6 +90,7 @@ impl AppState {
             history_repo.clone(),
             notif_mgr.clone(),
             trusted_mgr.clone(),
+            security_repo.clone(),
         ));
 
         Self {

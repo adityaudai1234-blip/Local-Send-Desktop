@@ -15,6 +15,7 @@ import { usePairingStore } from './stores/pairingStore';
 import { useConnectionStore } from './stores/connectionStore';
 import { useTransferStore } from './stores/transferStore';
 import { useSecurityStore } from './stores/securityStore';
+import { usePerformanceStore } from './stores/performanceStore';
 import { ManualAddModal } from './components/devices/ManualAddModal';
 import { PairingModal } from './components/pairing/PairingModal';
 import { QrScannerModal } from './components/pairing/QrScannerModal';
@@ -33,6 +34,7 @@ export default function App() {
   const { init: initConnection, error: connectionError, clearError: clearConnectionError } = useConnectionStore();
   const { init: initTransfer, notification: transferNotification, clearNotification: clearTransferNotification, error: transferError, clearError: clearTransferError } = useTransferStore();
   const { init: initSecurity, error: securityError, clearError: clearSecurityError } = useSecurityStore();
+  const { init: initPerformance } = usePerformanceStore();
   const { theme } = useSettingsStore();
 
   useEffect(() => {
@@ -41,6 +43,7 @@ export default function App() {
     initConnection();
     initTransfer();
     initSecurity();
+    initPerformance();
 
     let unlistenNav: (() => void) | undefined;
     tauriBridge

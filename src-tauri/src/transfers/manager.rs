@@ -8,19 +8,37 @@ use uuid::Uuid;
 use super::background::BackgroundTransferCoordinator;
 use super::metadata::{TransferDirection, TransferFileItem, TransferSession, TransferStatus};
 use super::priority::TransferPriority;
+use super::queue::TransferQueue;
 use super::receiver::FileReceiver;
 use super::recovery::{RecoverableTransferInfo, RecoveryManager};
 use super::scheduler::{QueuedTransferInfo, TransferScheduler};
 use super::sender::FileSender;
+use crate::audit::SecurityRepository;
 use crate::file_system::selection::SelectedFile;
 use crate::file_system::storage::get_download_directory;
 use crate::folders::metadata::FolderMetadata;
 use crate::folders::scanner::scan_directory;
 use crate::history::repository::HistoryRepository;
+use crate::io_optimizer::{
+    check_available_disk_space, query_available_disk_bytes, ChunkBufferPool,
+    WRITE_BUFFER_CAPACITY,
+};
+use crate::network_optimizer::NetworkOptimizer;
 use crate::networking::ConnectionManager;
 use crate::notifications::NotificationManager;
-use crate::protocol::messages::{MessageType, ProtocolMessage, TransferAcceptedPayload, TransferRejectedPayload};
+use crate::performance::metrics::{
+    DiskThroughputMetrics, NetworkThroughputMetrics, TransferPerformanceMetrics,
+    TransferQueueMetrics, TransferRecoveryStatus, TransferResourceUsage, TransferSpeedDetails,
+};
+use crate::performance::settings::{
+    load_optimization_settings, save_optimization_settings, TransferOptimizationSettings,
+};
+use crate::protocol::messages::{
+    MessageType, ProtocolMessage, TransferAcceptedPayload, TransferRejectedPayload,
+};
 use crate::system_tray::BackgroundTransferStatus;
+use crate::throughput_monitor::ThroughputMonitor;
+use crate::transfer_optimizer::ConcurrencyCoordinator;
 use crate::trusted_devices::TrustedDeviceManager;
 
 pub struct TransferManager {
@@ -30,13 +48,22 @@ pub struct TransferManager {
     pub selected_folders: Arc<Mutex<Vec<FolderMetadata>>>,
     pub cancellation_tokens: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
     pub pause_tokens: Arc<Mutex<HashMap<String, Arc<AtomicBool>>>>,
+    pub retry_counters: Arc<Mutex<HashMap<String, u32>>>,
     pub scheduler: Arc<TransferScheduler>,
+    pub transfer_queue: Arc<TransferQueue>,
     pub background: Arc<BackgroundTransferCoordinator>,
     pub receiver: Arc<FileReceiver>,
     pub sender: Arc<FileSender>,
     pub history: Arc<HistoryRepository>,
     pub notifications: Arc<NotificationManager>,
     pub trusted_devices: Arc<TrustedDeviceManager>,
+    pub security_repo: Arc<SecurityRepository>,
+    pub optimization_settings: Arc<Mutex<TransferOptimizationSettings>>,
+    pub throughput_monitor: Arc<ThroughputMonitor>,
+    pub buffer_pool: Arc<ChunkBufferPool>,
+    pub concurrency: Arc<ConcurrencyCoordinator>,
+    pub network_optimizer: Arc<NetworkOptimizer>,
+    connection_manager: Arc<ConnectionManager>,
     app_handle: Arc<Mutex<Option<AppHandle>>>,
 }
 
@@ -46,9 +73,31 @@ impl TransferManager {
         history: Arc<HistoryRepository>,
         notifications: Arc<NotificationManager>,
         trusted_devices: Arc<TrustedDeviceManager>,
+        security_repo: Arc<SecurityRepository>,
     ) -> Self {
-        let receiver = Arc::new(FileReceiver::new());
-        let sender = Arc::new(FileSender::new(connection_manager));
+        let initial_settings = load_optimization_settings(&security_repo);
+        let transfer_queue = Arc::new(TransferQueue::new());
+        transfer_queue.set_max_concurrent(initial_settings.max_concurrent_transfers);
+
+        let buffer_pool = Arc::new(ChunkBufferPool::new());
+        let throughput_monitor = Arc::new(ThroughputMonitor::new(
+            initial_settings.default_chunk_bytes(),
+        ));
+        let concurrency = Arc::new(ConcurrencyCoordinator::new(
+            initial_settings.max_concurrent_file_ops,
+            initial_settings.max_concurrent_chunk_ops,
+        ));
+
+        let receiver = Arc::new(FileReceiver::new(
+            Arc::clone(&buffer_pool),
+            Arc::clone(&throughput_monitor),
+        ));
+        let sender = Arc::new(FileSender::new(
+            Arc::clone(&connection_manager),
+            Arc::clone(&buffer_pool),
+            Arc::clone(&throughput_monitor),
+            Arc::clone(&concurrency),
+        ));
 
         Self {
             active_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -57,13 +106,22 @@ impl TransferManager {
             selected_folders: Arc::new(Mutex::new(Vec::new())),
             cancellation_tokens: Arc::new(Mutex::new(HashMap::new())),
             pause_tokens: Arc::new(Mutex::new(HashMap::new())),
+            retry_counters: Arc::new(Mutex::new(HashMap::new())),
             scheduler: Arc::new(TransferScheduler::new()),
+            transfer_queue,
             background: Arc::new(BackgroundTransferCoordinator::new()),
             receiver,
             sender,
             history,
             notifications,
             trusted_devices,
+            security_repo,
+            optimization_settings: Arc::new(Mutex::new(initial_settings)),
+            throughput_monitor,
+            buffer_pool,
+            concurrency,
+            network_optimizer: Arc::new(NetworkOptimizer::new()),
+            connection_manager,
             app_handle: Arc::new(Mutex::new(None)),
         }
     }
@@ -170,8 +228,13 @@ impl TransferManager {
         }
 
         let transfer_id = Uuid::new_v4().to_string();
-        let total_bytes: u64 = files_to_send.iter().map(|f| f.size).sum();
-        let priority = priority.unwrap_or(TransferPriority::Normal);
+        let total_bytes: u64 = files_to_send
+            .iter()
+            .try_fold(0u64, |acc, f| acc.checked_add(f.size))
+            .ok_or_else(|| "Total transfer size exceeds 64-bit limit".to_string())?;
+
+        let default_prio = self.optimization_settings.lock().unwrap().default_priority;
+        let priority = priority.unwrap_or(default_prio);
 
         let names: Vec<String> = files_to_send.iter().map(|f| f.name.clone()).collect();
         let dedup_key = TransferScheduler::make_dedup_key(&recipient_id, &names);
@@ -221,7 +284,7 @@ impl TransferManager {
         {
             let mut lock = self.active_sessions.lock().unwrap();
             self.scheduler
-                .enqueue(transfer_id.clone(), priority, dedup_key, &lock)?;
+                .enqueue_with_size(transfer_id.clone(), priority, total_bytes, dedup_key, &lock)?;
             lock.insert(transfer_id.clone(), session.clone());
         }
 
@@ -235,6 +298,7 @@ impl TransferManager {
         let _ = self.history.save_session(&session);
         self.sender.send_transfer_request(&session).await?;
         self.emit_event("transfer-updated", session.clone());
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
 
         Ok(session)
     }
@@ -265,7 +329,8 @@ impl TransferManager {
         }
 
         let transfer_id = Uuid::new_v4().to_string();
-        let priority = priority.unwrap_or(TransferPriority::Normal);
+        let default_prio = self.optimization_settings.lock().unwrap().default_priority;
+        let priority = priority.unwrap_or(default_prio);
 
         let root_folder_name = if folders_to_send.len() == 1 {
             folders_to_send[0].folder_name.clone()
@@ -280,7 +345,9 @@ impl TransferManager {
         let mut transfer_files: Vec<TransferFileItem> = Vec::new();
 
         for folder in folders_to_send {
-            total_bytes += folder.total_bytes;
+            total_bytes = total_bytes
+                .checked_add(folder.total_bytes)
+                .ok_or_else(|| "Folder batch size overflows 64-bit limit".to_string())?;
             for entry in folder.files {
                 transfer_files.push(TransferFileItem {
                     file_id: entry.id,
@@ -326,7 +393,7 @@ impl TransferManager {
         {
             let mut lock = self.active_sessions.lock().unwrap();
             self.scheduler
-                .enqueue(transfer_id.clone(), priority, dedup_key, &lock)?;
+                .enqueue_with_size(transfer_id.clone(), priority, total_bytes, dedup_key, &lock)?;
             lock.insert(transfer_id.clone(), session.clone());
         }
 
@@ -340,6 +407,7 @@ impl TransferManager {
         let _ = self.history.save_session(&session);
         self.sender.send_transfer_request(&session).await?;
         self.emit_event("transfer-updated", session.clone());
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
 
         Ok(session)
     }
@@ -352,13 +420,18 @@ impl TransferManager {
             let s = lock
                 .get_mut(transfer_id)
                 .ok_or_else(|| format!("Session {} not found", transfer_id))?;
-            s.status = TransferStatus::Transferring;
+            if self.transfer_queue.acquire_slot() {
+                s.status = TransferStatus::Transferring;
+            } else {
+                s.status = TransferStatus::Queued;
+            }
             let cloned = s.clone();
             let _ = self.history.save_session(&cloned);
             cloned
         };
 
         self.emit_event("transfer-accepted", session.clone());
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
 
         let sender = self.sender.clone();
         let active_sessions = self.active_sessions.clone();
@@ -366,6 +439,20 @@ impl TransferManager {
         let history_repo = self.history.clone();
         let notifications = self.notifications.clone();
         let scheduler = self.scheduler.clone();
+        let transfer_queue = self.transfer_queue.clone();
+        let throughput_monitor = self.throughput_monitor.clone();
+        let buffer_pool = self.buffer_pool.clone();
+        let opt_settings_arc = self.optimization_settings.clone();
+        let network_optimizer = self.network_optimizer.clone();
+        let conn_mgr = self.connection_manager.clone();
+
+        let retry_count_current = self
+            .retry_counters
+            .lock()
+            .unwrap()
+            .get(transfer_id)
+            .copied()
+            .unwrap_or(0);
 
         let is_cancelled = {
             let lock = self.cancellation_tokens.lock().unwrap();
@@ -384,26 +471,111 @@ impl TransferManager {
         let tx_id = transfer_id.to_string();
 
         tokio::spawn(async move {
-            let handle_clone = app_handle_opt.clone();
-            let res = sender
-                .stream_session_files(&mut session, is_cancelled, is_paused, move |progress| {
-                    if let Some(ref handle) = *handle_clone.lock().unwrap() {
-                        let _ = handle.emit("transfer-progress", progress);
+            // Wait fairly if queued behind higher-priority or earlier transfers
+            while matches!(session.status, TransferStatus::Queued) {
+                if is_cancelled.load(Ordering::SeqCst) {
+                    return;
+                }
+                if transfer_queue.acquire_slot() {
+                    session.status = TransferStatus::Transferring;
+                    if let Ok(mut lock) = active_sessions.lock() {
+                        if let Some(s) = lock.get_mut(&tx_id) {
+                            s.status = TransferStatus::Transferring;
+                        }
                     }
-                })
+                    break;
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+
+            let opt_snapshot = opt_settings_arc.lock().unwrap().clone();
+            let handle_for_progress = app_handle_opt.clone();
+            let tm_for_progress = throughput_monitor.clone();
+            let sessions_for_progress = active_sessions.clone();
+            let scheduler_for_progress = scheduler.clone();
+            let pool_for_progress = buffer_pool.clone();
+            let net_opt_progress = network_optimizer.clone();
+            let conn_mgr_progress = conn_mgr.clone();
+            let tx_id_inner = tx_id.clone();
+
+            let res = sender
+                .stream_session_files(
+                    &mut session,
+                    opt_snapshot.clone(),
+                    None,
+                    retry_count_current,
+                    is_cancelled,
+                    is_paused,
+                    move |progress| {
+                        // Sync live session snapshot
+                        let snapshot_perf = {
+                            let mut s_lock = sessions_for_progress.lock().unwrap();
+                            if let Some(s) = s_lock.get_mut(&tx_id_inner) {
+                                s.bytes_transferred = progress.bytes_transferred;
+                                s.speed_bytes_per_sec = progress.speed_bytes_per_sec;
+                                s.estimated_seconds_remaining = progress.estimated_seconds_remaining;
+                            }
+                            let (_, _, _, active_buf, _) = pool_for_progress.snapshot();
+                            tm_for_progress.build_performance_metrics(
+                                &s_lock,
+                                scheduler_for_progress.len(),
+                                opt_snapshot.adaptive_chunking_enabled,
+                                active_buf,
+                            )
+                        };
+
+                        if let Some(ref handle) = *handle_for_progress.lock().unwrap() {
+                            let _ = handle.emit("transfer-progress", progress.clone());
+                            if tm_for_progress.should_emit_channel("transfer_speed_update") {
+                                let _ = handle.emit("transfer_speed_update", progress);
+                            }
+                            if tm_for_progress.should_emit_channel("transfer_performance_update") {
+                                let _ = handle.emit("transfer_performance_update", snapshot_perf);
+                            }
+                            if tm_for_progress.should_emit_channel("network_throughput_update") {
+                                let conns = conn_mgr_progress.get_connections();
+                                let stats = conn_mgr_progress.get_stats();
+                                let (ip, changed_at, _) = net_opt_progress.check_interface_change();
+                                let assess = net_opt_progress.assess_link_quality(
+                                    &conns,
+                                    retry_count_current,
+                                    0,
+                                );
+                                let net_metrics = tm_for_progress.build_network_metrics(
+                                    stats.total_tx_bytes,
+                                    stats.total_rx_bytes,
+                                    stats.active_connections_count,
+                                    assess.quality.clone(),
+                                    assess.average_latency_ms,
+                                    net_opt_progress.congestion_count(),
+                                    ip.clone(),
+                                    changed_at,
+                                );
+                                let _ = handle.emit("network_throughput_update", net_metrics);
+                                let _ = handle.emit(
+                                    "network_quality_update",
+                                    net_opt_progress.to_quality_event(&assess, ip),
+                                );
+                            }
+                        }
+                    },
+                )
                 .await;
+
+            transfer_queue.release_slot();
+            throughput_monitor.reset_transfer_speed(&tx_id);
 
             let mut lock = active_sessions.lock().unwrap();
             if let Some(s) = lock.get_mut(&tx_id) {
                 s.bytes_transferred = session.bytes_transferred;
-                s.speed_bytes_per_sec = session.speed_bytes_per_sec;
+                s.speed_bytes_per_sec = 0;
+                s.estimated_seconds_remaining = None;
                 s.files = session.files;
 
                 match res {
                     Ok(_) => {
                         s.status = TransferStatus::Completed;
                         s.completed_at = Some(chrono::Utc::now().timestamp_millis());
-                        s.speed_bytes_per_sec = 0;
                         let label = s
                             .root_folder_name
                             .clone()
@@ -420,13 +592,14 @@ impl TransferManager {
                         }
                     }
                     Err(err) => {
-                        s.status = if err.to_lowercase().contains("cancel") {
+                        let is_cancel = err.to_lowercase().contains("cancel");
+                        s.status = if is_cancel {
                             TransferStatus::Cancelled
                         } else {
+                            throughput_monitor.record_failure();
                             TransferStatus::Failed
                         };
                         s.error_message = Some(err.clone());
-                        s.speed_bytes_per_sec = 0;
                         if let Some(ref handle) = *app_handle_opt.lock().unwrap() {
                             let _ = handle.emit(
                                 "transfer-failed",
@@ -498,8 +671,14 @@ impl TransferManager {
                 .ok_or_else(|| format!("Pending transfer {} not found", transfer_id))?
         };
 
+        let download_dir = get_download_directory();
+        let disk_check = check_available_disk_space(&download_dir, session.total_bytes);
+        if !disk_check.sufficient {
+            return Err(disk_check.message);
+        }
+
         session.status = TransferStatus::Transferring;
-        session.destination_directory = Some(get_download_directory().to_string_lossy().to_string());
+        session.destination_directory = Some(download_dir.to_string_lossy().to_string());
 
         for f in &session.files {
             self.receiver
@@ -516,18 +695,29 @@ impl TransferManager {
                     .clone()
                     .unwrap_or_else(|| session.transfer_id.clone())],
             );
-            let _ = self
-                .scheduler
-                .enqueue(transfer_id.to_string(), session.priority, dedup_key, &lock);
+            let _ = self.scheduler.enqueue_with_size(
+                transfer_id.to_string(),
+                session.priority,
+                session.total_bytes,
+                dedup_key,
+                &lock,
+            );
             lock.insert(transfer_id.to_string(), session.clone());
         }
 
         let _ = self.history.save_session(&session);
 
+        let chunk_bytes = self
+            .optimization_settings
+            .lock()
+            .unwrap()
+            .default_chunk_bytes()
+            .min(1_048_576);
+
         let accepted_payload = TransferAcceptedPayload {
             transfer_id: transfer_id.to_string(),
             accepted_file_ids: session.files.iter().map(|f| f.file_id.clone()).collect(),
-            max_chunk_size: 65536,
+            max_chunk_size: chunk_bytes,
         };
 
         let msg = ProtocolMessage::new(
@@ -544,6 +734,7 @@ impl TransferManager {
             .await;
 
         self.emit_event("transfer-updated", session.clone());
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
 
         Ok(session)
     }
@@ -630,6 +821,8 @@ impl TransferManager {
             token.store(true, Ordering::SeqCst);
         }
 
+        self.throughput_monitor.reset_transfer_speed(transfer_id);
+
         let mut lock = self.active_sessions.lock().unwrap();
         if let Some(s) = lock.get_mut(transfer_id) {
             s.status = TransferStatus::Cancelled;
@@ -665,7 +858,9 @@ impl TransferManager {
                     (s.sender_device_id == device_id || s.recipient_device_id == device_id)
                         && !matches!(
                             s.status,
-                            TransferStatus::Completed | TransferStatus::Cancelled | TransferStatus::Failed
+                            TransferStatus::Completed
+                                | TransferStatus::Cancelled
+                                | TransferStatus::Failed
                         )
                 })
                 .map(|(id, _)| id.clone())
@@ -685,7 +880,14 @@ impl TransferManager {
         let ids: Vec<String> = {
             let lock = self.active_sessions.lock().unwrap();
             lock.iter()
-                .filter(|(_, s)| matches!(s.status, TransferStatus::Transferring | TransferStatus::Queued | TransferStatus::Preparing))
+                .filter(|(_, s)| {
+                    matches!(
+                        s.status,
+                        TransferStatus::Transferring
+                            | TransferStatus::Queued
+                            | TransferStatus::Preparing
+                    )
+                })
                 .map(|(id, _)| id.clone())
                 .collect()
         };
@@ -729,6 +931,8 @@ impl TransferManager {
             let _ = self.history.save_session(s);
             self.emit_event("transfer-updated", s.clone());
         }
+        drop(lock);
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
         Ok(pos)
     }
 
@@ -737,7 +941,20 @@ impl TransferManager {
             .get_transfer_details(transfer_id)
             .ok_or_else(|| format!("Transfer {} not found for retry", transfer_id))?;
 
+        let prev_retries = {
+            let lock = self.retry_counters.lock().unwrap();
+            lock.get(transfer_id).copied().unwrap_or(0)
+        };
+        let next_retries = prev_retries + 1;
+        self.throughput_monitor.record_retry();
+        self.throughput_monitor.reset_transfer_speed(transfer_id);
+
         let new_id = Uuid::new_v4().to_string();
+        self.retry_counters
+            .lock()
+            .unwrap()
+            .insert(new_id.clone(), next_retries);
+
         let mut new_files = Vec::new();
         for f in old_session.files {
             new_files.push(TransferFileItem {
@@ -790,9 +1007,13 @@ impl TransferManager {
 
         {
             let mut lock = self.active_sessions.lock().unwrap();
-            let _ = self
-                .scheduler
-                .enqueue(new_id.clone(), new_session.priority, dedup_key, &lock);
+            let _ = self.scheduler.enqueue_with_size(
+                new_id.clone(),
+                new_session.priority,
+                new_session.total_bytes,
+                dedup_key,
+                &lock,
+            );
             lock.insert(new_id.clone(), new_session.clone());
         }
 
@@ -812,10 +1033,12 @@ impl TransferManager {
 
     pub fn remove_transfer(&self, transfer_id: &str) -> Result<bool, String> {
         self.scheduler.remove(transfer_id);
+        self.throughput_monitor.reset_transfer_speed(transfer_id);
         let mut lock = self.active_sessions.lock().unwrap();
         let removed = lock.remove(transfer_id).is_some();
         self.cancellation_tokens.lock().unwrap().remove(transfer_id);
         self.pause_tokens.lock().unwrap().remove(transfer_id);
+        self.retry_counters.lock().unwrap().remove(transfer_id);
         Ok(removed)
     }
 
@@ -846,13 +1069,31 @@ impl TransferManager {
         self.scheduler.get_queue_snapshot(&lock)
     }
 
+    pub fn optimize_transfer_queue(&self) -> Vec<QueuedTransferInfo> {
+        let lock = self.active_sessions.lock().unwrap();
+        let optimized = self.scheduler.optimize_queue(&lock);
+        drop(lock);
+        self.emit_event("transfer_queue_update", self.get_transfer_queue_metrics());
+        optimized
+    }
+
     pub fn get_background_transfer_status(&self) -> BackgroundTransferStatus {
         let lock = self.active_sessions.lock().unwrap();
         self.background.build_status(&lock)
     }
 
     pub fn get_recoverable_transfers(&self) -> Vec<RecoverableTransferInfo> {
-        RecoveryManager::scan_recoverable_transfers(&self.history, &self.trusted_devices)
+        self.get_transfer_recovery_status().items
+    }
+
+    pub fn get_transfer_recovery_status(&self) -> TransferRecoveryStatus {
+        let status = RecoveryManager::scan_recoverable_transfers_checked(
+            &self.history,
+            &self.trusted_devices,
+            Some(&self.security_repo),
+        );
+        self.emit_event("transfer_recovery_update", status.clone());
+        status
     }
 
     pub async fn recover_transfer(
@@ -863,12 +1104,23 @@ impl TransferManager {
         if fresh_retry {
             return self.retry_transfer(transfer_id).await;
         }
+
+        let recovery = self.get_transfer_recovery_status();
+        if let Some(item) = recovery.items.iter().find(|r| r.transfer_id == transfer_id) {
+            if !item.can_resume {
+                return Err(format!("Cannot safely resume transfer: {}", item.reason));
+            }
+        }
+
         let session = self
             .get_transfer_details(transfer_id)
             .ok_or_else(|| format!("Recoverable session {} not found", transfer_id))?;
 
+        self.throughput_monitor.reset_transfer_speed(transfer_id);
+
         let mut restored = session.clone();
         restored.status = TransferStatus::Paused;
+        restored.speed_bytes_per_sec = 0;
         {
             let mut lock = self.active_sessions.lock().unwrap();
             lock.insert(restored.transfer_id.clone(), restored.clone());
@@ -883,5 +1135,116 @@ impl TransferManager {
         let _ = self.history.save_session(&restored);
         self.emit_event("transfer-updated", restored.clone());
         Ok(restored)
+    }
+
+    // --- Phase 7: Performance Metrics, Settings & Resource Inspection ---
+
+    pub fn get_optimization_settings(&self) -> TransferOptimizationSettings {
+        self.optimization_settings.lock().unwrap().clone()
+    }
+
+    pub async fn update_optimization_settings(
+        &self,
+        settings: TransferOptimizationSettings,
+    ) -> Result<TransferOptimizationSettings, String> {
+        let saved = save_optimization_settings(&self.security_repo, settings)?;
+        self.transfer_queue
+            .set_max_concurrent(saved.max_concurrent_transfers);
+        self.throughput_monitor
+            .set_current_chunk_size(saved.default_chunk_bytes());
+        self.concurrency
+            .reconfigure(saved.max_concurrent_file_ops, saved.max_concurrent_chunk_ops)
+            .await;
+
+        *self.optimization_settings.lock().unwrap() = saved.clone();
+        self.emit_event(
+            "transfer_performance_update",
+            self.get_transfer_performance_metrics(),
+        );
+        Ok(saved)
+    }
+
+    pub fn get_transfer_performance_metrics(&self) -> TransferPerformanceMetrics {
+        let sessions = self.active_sessions.lock().unwrap();
+        let opt = self.optimization_settings.lock().unwrap();
+        let (_, _, _, active_buf, _) = self.buffer_pool.snapshot();
+        self.throughput_monitor.build_performance_metrics(
+            &sessions,
+            self.scheduler.len(),
+            opt.adaptive_chunking_enabled,
+            active_buf,
+        )
+    }
+
+    pub fn get_network_throughput(&self) -> NetworkThroughputMetrics {
+        let conns = self.connection_manager.get_connections();
+        let stats = self.connection_manager.get_stats();
+        let (ip, changed_at, _) = self.network_optimizer.check_interface_change();
+        let perf = self.get_transfer_performance_metrics();
+        let assess =
+            self.network_optimizer
+                .assess_link_quality(&conns, 0, perf.combined_throughput_bps);
+
+        self.throughput_monitor.build_network_metrics(
+            stats.total_tx_bytes,
+            stats.total_rx_bytes,
+            stats.active_connections_count,
+            assess.quality,
+            assess.average_latency_ms,
+            self.network_optimizer.congestion_count(),
+            ip,
+            changed_at,
+        )
+    }
+
+    pub fn get_disk_throughput(&self) -> DiskThroughputMetrics {
+        let download_dir = get_download_directory();
+        let avail = query_available_disk_bytes(&download_dir);
+        self.throughput_monitor.build_disk_metrics(
+            WRITE_BUFFER_CAPACITY,
+            avail,
+            download_dir.to_string_lossy().to_string(),
+        )
+    }
+
+    pub fn get_transfer_speed_details(
+        &self,
+        transfer_id: &str,
+    ) -> Result<TransferSpeedDetails, String> {
+        let session = self
+            .get_transfer_details(transfer_id)
+            .ok_or_else(|| format!("Transfer {} not found", transfer_id))?;
+        Ok(self.throughput_monitor.get_transfer_speed_details(&session))
+    }
+
+    pub fn get_transfer_queue_metrics(&self) -> TransferQueueMetrics {
+        let sessions = self.active_sessions.lock().unwrap();
+        let max_conc = self.transfer_queue.max_concurrent();
+        self.scheduler.get_queue_metrics(&sessions, max_conc)
+    }
+
+    pub fn get_transfer_resource_usage(&self) -> TransferResourceUsage {
+        let (handles, active_bufs, pooled_avail, buf_bytes, peak_buf_bytes) =
+            self.buffer_pool.snapshot();
+        let (active_file_ops, max_file_ops, active_chunk_ops, max_chunk_ops) =
+            self.concurrency.snapshot();
+        let opt = self.optimization_settings.lock().unwrap().clone();
+        let active_net_conns = self.connection_manager.get_stats().active_connections_count;
+
+        TransferResourceUsage {
+            active_file_handles: handles,
+            active_chunk_buffers: active_bufs,
+            pooled_buffers_available: pooled_avail,
+            buffer_memory_bytes: buf_bytes,
+            peak_buffer_memory_bytes: peak_buf_bytes,
+            active_concurrent_transfers: self.transfer_queue.active_count(),
+            max_concurrent_transfers: self.transfer_queue.max_concurrent(),
+            active_file_ops,
+            max_concurrent_file_ops: max_file_ops,
+            active_network_connections: active_net_conns,
+            max_concurrent_connections: opt.max_concurrent_connections,
+            active_chunk_ops,
+            max_concurrent_chunk_ops: max_chunk_ops,
+        }
     }
 }

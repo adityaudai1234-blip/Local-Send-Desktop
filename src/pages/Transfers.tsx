@@ -14,11 +14,16 @@ import {
   RefreshCw,
   HardDriveDownload,
   Gauge,
+  Wifi,
+  Cpu,
+  SlidersHorizontal,
 } from 'lucide-react';
 import { useTransferStore } from '../stores/transferStore';
-import { formatBytes, formatSpeed } from '../utils/formatters';
+import { usePerformanceStore } from '../stores/performanceStore';
+import { formatBytes, formatChunkSize, formatEta, formatSpeed } from '../utils/formatters';
 import { TransferDetailsModal } from '../components/transfers/TransferDetailsModal';
 import { IncomingTransferModal } from '../components/transfers/IncomingTransferModal';
+import { ThroughputGraph } from '../components/transfers/ThroughputGraph';
 import { TransferPriority } from '../types/transfer';
 
 export const Transfers: React.FC = () => {
@@ -45,13 +50,30 @@ export const Transfers: React.FC = () => {
     simulateIncomingProposal,
   } = useTransferStore();
 
+  const {
+    performanceMetrics,
+    networkThroughput,
+    diskThroughput,
+    resourceUsage,
+    queueMetrics,
+    optimizationSettings,
+    historyPoints,
+    graphPaused,
+    refreshAll: refreshPerformance,
+    optimizeQueue,
+    toggleGraphPaused,
+    clearGraphHistory,
+  } = usePerformanceStore();
+
   const [filter, setFilter] = useState<'all' | 'active' | 'incoming' | 'outgoing' | 'completed' | 'failed'>('all');
+  const [optimizing, setOptimizing] = useState(false);
 
   useEffect(() => {
     loadQueue();
     loadBackgroundStatus();
     loadRecoverableTransfers();
-  }, [loadQueue, loadBackgroundStatus, loadRecoverableTransfers]);
+    refreshPerformance();
+  }, [loadQueue, loadBackgroundStatus, loadRecoverableTransfers, refreshPerformance]);
 
   const queuePosMap = new Map(queueItems.map((q) => [q.transferId, q.queuePosition]));
 
@@ -72,16 +94,33 @@ export const Transfers: React.FC = () => {
   const pausedCount = transfers.filter((t) => t.status === 'paused').length;
   const transferringCount = transfers.filter((t) => t.status === 'transferring' || t.status === 'queued').length;
 
+  const handleOptimizeQueue = async () => {
+    setOptimizing(true);
+    try {
+      await optimizeQueue();
+      await loadQueue();
+    } finally {
+      setOptimizing(false);
+    }
+  };
+
+  const netQualityColor =
+    networkThroughput?.networkQuality === 'congested'
+      ? 'text-rose-600 dark:text-rose-400'
+      : networkThroughput?.networkQuality === 'degraded'
+        ? 'text-amber-600 dark:text-amber-400'
+        : 'text-emerald-600 dark:text-emerald-400';
+
   return (
     <div className="p-8 max-w-7xl mx-auto space-y-6">
       {/* Header and Controls */}
       <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4">
         <div>
           <h2 className="text-lg font-semibold text-neutral-900 dark:text-white">
-            Transfer Queue &amp; Background Manager
+            Transfer Queue &amp; Performance Monitor
           </h2>
           <p className="text-xs text-neutral-500">
-            Priority-scheduled P2P queue with pause/resume, retry, and interrupted session recovery.
+            Adaptive chunking, anti-starvation queue scheduling, real-time throughput metrics, and interrupted session recovery.
           </p>
         </div>
 
@@ -134,6 +173,127 @@ export const Transfers: React.FC = () => {
         </div>
       </div>
 
+      {/* Phase 7: Network Performance & Transfer Performance Cards */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Network Performance Card */}
+        <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/70 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Wifi className="w-4 h-4 text-cyan-500" />
+              <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
+                Network Performance
+              </h3>
+            </div>
+            <span className={`text-xs font-medium capitalize ${netQualityColor}`}>
+              {networkThroughput?.networkQuality || 'good'} link
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div>
+              <span className="text-neutral-500 block">Upload</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {formatSpeed(networkThroughput?.uploadBps ?? 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Download</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {formatSpeed(networkThroughput?.downloadBps ?? 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Peak Speed</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {formatSpeed(performanceMetrics?.peakSpeedBps ?? 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Latency</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {networkThroughput?.averageLatencyMs ?? 0} ms
+              </span>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 font-mono tabular-nums">
+            <span>
+              Interface: {networkThroughput?.interfaceIp || '127.0.0.1'} · {networkThroughput?.activeConnections ?? 0} peer(s)
+            </span>
+            <span>
+              TX {formatBytes(networkThroughput?.totalTxBytes ?? 0)} / RX {formatBytes(networkThroughput?.totalRxBytes ?? 0)}
+            </span>
+          </div>
+        </section>
+
+        {/* Transfer Performance Card */}
+        <section className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/70 space-y-4">
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Cpu className="w-4 h-4 text-emerald-500" />
+              <h3 className="text-sm font-semibold text-neutral-900 dark:text-white">
+                Transfer Engine Performance
+              </h3>
+            </div>
+            <span className="text-xs font-mono tabular-nums text-neutral-500">
+              {optimizationSettings.adaptiveChunkingEnabled ? 'Adaptive' : 'Fixed'} ·{' '}
+              {formatChunkSize(performanceMetrics?.currentChunkSizeBytes ?? optimizationSettings.defaultChunkSizeKb * 1024)}
+            </span>
+          </div>
+
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs">
+            <div>
+              <span className="text-neutral-500 block">Active / Queued</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {performanceMetrics?.activeTransfers ?? 0} / {performanceMetrics?.queuedTransfers ?? 0}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Disk Write</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {formatSpeed(diskThroughput?.writeBps ?? 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Buffer Memory</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {formatBytes(resourceUsage?.bufferMemoryBytes ?? 0)}
+              </span>
+            </div>
+            <div>
+              <span className="text-neutral-500 block">Retries / Failures</span>
+              <span className="font-mono tabular-nums text-sm font-semibold text-neutral-900 dark:text-white">
+                {performanceMetrics?.retryCount ?? 0} / {performanceMetrics?.failedCount ?? 0}
+              </span>
+            </div>
+          </div>
+
+          <div className="pt-2 border-t border-neutral-100 dark:border-neutral-800 flex flex-wrap items-center justify-between gap-2 text-[11px] text-neutral-500 font-mono tabular-nums">
+            <span>
+              Slots {resourceUsage?.activeConcurrentTransfers ?? 0}/{resourceUsage?.maxConcurrentTransfers ?? optimizationSettings.maxConcurrentTransfers} · Handles {resourceUsage?.activeFileHandles ?? 0}
+            </span>
+            <span>
+              {diskThroughput?.availableDiskBytes !== null && diskThroughput?.availableDiskBytes !== undefined
+                ? `Free Disk ${formatBytes(diskThroughput.availableDiskBytes)}`
+                : `Write Buffer ${formatChunkSize(diskThroughput?.writeBufferSizeBytes ?? 262144)}`}
+            </span>
+          </div>
+        </section>
+      </div>
+
+      {/* Real-Time Performance Graph */}
+      {optimizationSettings.performanceGraphEnabled && (
+        <ThroughputGraph
+          points={historyPoints}
+          currentUploadBps={networkThroughput?.uploadBps ?? 0}
+          currentDownloadBps={networkThroughput?.downloadBps ?? 0}
+          peakSpeedBps={performanceMetrics?.peakSpeedBps ?? 0}
+          paused={graphPaused}
+          onTogglePause={toggleGraphPaused}
+          onClear={clearGraphHistory}
+        />
+      )}
+
       {/* Background Queue & Tray Banner */}
       {backgroundStatus && (backgroundStatus.activeTransfersCount > 0 || backgroundStatus.pausedTransfersCount > 0) && (
         <div className="p-3.5 rounded-xl border border-cyan-500/30 bg-cyan-500/5 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 text-xs">
@@ -145,7 +305,7 @@ export const Transfers: React.FC = () => {
               </span>
               <span className="text-neutral-500 ml-2">
                 {backgroundStatus.activeTransfersCount} active · {backgroundStatus.pausedTransfersCount} paused ·{' '}
-                <span className="font-mono">{formatSpeed(backgroundStatus.totalTransferSpeedBps)}</span> total throughput
+                <span className="font-mono tabular-nums">{formatSpeed(backgroundStatus.totalTransferSpeedBps)}</span> total throughput
               </span>
             </div>
           </div>
@@ -153,6 +313,80 @@ export const Transfers: React.FC = () => {
             System Tray Synced
           </span>
         </div>
+      )}
+
+      {/* Phase 7: Transfer Queue Overview Table */}
+      {queueItems.length > 0 && (
+        <section className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/70 overflow-hidden">
+          <div className="px-5 py-3.5 border-b border-neutral-200 dark:border-neutral-800 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <div className="flex items-center gap-2 text-xs">
+              <SlidersHorizontal className="w-4 h-4 text-cyan-500" />
+              <span className="font-semibold text-neutral-900 dark:text-white">
+                Transfer Queue Overview
+              </span>
+              <span className="text-neutral-500 font-mono tabular-nums">
+                · {queueItems.length} scheduled · {queueMetrics?.starvationBoostsApplied ?? 0} anti-starvation boosts
+              </span>
+            </div>
+
+            <button
+              type="button"
+              onClick={handleOptimizeQueue}
+              disabled={optimizing}
+              className="px-3 py-1 text-xs font-medium rounded-lg border border-neutral-200 dark:border-neutral-700 text-neutral-700 dark:text-neutral-300 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors disabled:opacity-50"
+            >
+              {optimizing ? 'Optimizing...' : 'Optimize Queue'}
+            </button>
+          </div>
+
+          <div className="overflow-x-auto">
+            <table className="w-full text-left text-xs">
+              <thead className="border-b border-neutral-200 dark:border-neutral-800 text-[11px] uppercase tracking-wider text-neutral-500 bg-neutral-50/70 dark:bg-neutral-950/30">
+                <tr>
+                  <th className="py-2.5 px-4 font-medium">#</th>
+                  <th className="py-2.5 px-4 font-medium">Transfer</th>
+                  <th className="py-2.5 px-4 font-medium">Destination</th>
+                  <th className="py-2.5 px-4 font-medium text-right">Size</th>
+                  <th className="py-2.5 px-4 font-medium">Priority</th>
+                  <th className="py-2.5 px-4 font-medium">Status</th>
+                  <th className="py-2.5 px-4 font-medium text-right">ETA</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-neutral-100 dark:divide-neutral-800">
+                {queueItems.map((q) => (
+                  <tr
+                    key={q.transferId}
+                    className="hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors"
+                  >
+                    <td className="py-2.5 px-4 font-mono tabular-nums text-neutral-500">
+                      #{q.queuePosition}
+                    </td>
+                    <td className="py-2.5 px-4 font-medium text-neutral-900 dark:text-white max-w-[200px] truncate">
+                      {q.rootName}
+                    </td>
+                    <td className="py-2.5 px-4 text-neutral-600 dark:text-neutral-400">
+                      {q.recipientName}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums text-neutral-700 dark:text-neutral-300">
+                      {formatBytes(q.totalBytes)}
+                    </td>
+                    <td className="py-2.5 px-4 capitalize font-medium text-neutral-700 dark:text-neutral-300">
+                      {q.priority}
+                    </td>
+                    <td className="py-2.5 px-4 capitalize text-neutral-600 dark:text-neutral-400">
+                      {q.status.replace(/_/g, ' ')}
+                    </td>
+                    <td className="py-2.5 px-4 text-right font-mono tabular-nums text-neutral-500">
+                      {q.status === 'transferring'
+                        ? formatEta(q.estimatedSecondsRemaining, q.estimatedSecondsRemaining !== undefined)
+                        : '—'}
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </section>
       )}
 
       {/* Interrupted Transfer Recovery Banner */}
@@ -176,7 +410,7 @@ export const Transfers: React.FC = () => {
               >
                 <div className="min-w-0">
                   <p className="font-semibold text-neutral-900 dark:text-white truncate">{rec.rootName}</p>
-                  <p className="text-[11px] text-neutral-500">
+                  <p className="text-[11px] text-neutral-500 font-mono tabular-nums">
                     Peer: {rec.peerDeviceName} · {formatBytes(rec.bytesTransferred)} / {formatBytes(rec.totalBytes)} · {rec.reason}
                   </p>
                 </div>
@@ -218,8 +452,8 @@ export const Transfers: React.FC = () => {
           >
             {tab}
             {tab === 'active' && activeCount > 0 && (
-              <span className="ml-1.5 px-1.5 py-0.2 rounded-full bg-cyan-500 text-white text-[10px]">
-                {activeCount}
+              <span className="ml-1.5 font-mono tabular-nums text-cyan-600 dark:text-cyan-400">
+                ({activeCount})
               </span>
             )}
           </button>
@@ -247,11 +481,12 @@ export const Transfers: React.FC = () => {
               const isFailed = item.status === 'failed' || item.status === 'cancelled';
               const isTransferring = item.status === 'transferring' || item.status === 'queued';
               const queuePos = queuePosMap.get(item.id) || item.queuePosition;
+              const remainingBytes = Math.max(0, item.size - item.bytesTransferred);
 
               return (
                 <div
                   key={item.id}
-                  className="p-5 rounded-2xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/70 space-y-3 shadow-xs hover:border-neutral-300 dark:hover:border-neutral-700 transition-all"
+                  className="p-5 rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900/70 space-y-3 hover:border-neutral-300 dark:hover:border-neutral-700 transition-colors"
                 >
                   <div className="flex flex-col sm:flex-row sm:items-start justify-between gap-4">
                     <div className="flex items-center gap-3 min-w-0">
@@ -269,8 +504,8 @@ export const Transfers: React.FC = () => {
                             {item.name}
                           </h4>
                           {queuePos !== undefined && !isCompleted && !isFailed && (
-                            <span className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-600 dark:text-neutral-300">
-                              Queue #{queuePos}
+                            <span className="text-[11px] font-mono tabular-nums text-neutral-500">
+                              · Queue #{queuePos}
                             </span>
                           )}
                           <span className="flex items-center gap-1 text-[11px] font-medium text-neutral-500 shrink-0">
@@ -305,11 +540,19 @@ export const Transfers: React.FC = () => {
                                     : 'Failed'
                                   : formatSpeed(item.speed)}
                           </span>
-                          {item.etaSeconds !== undefined && item.etaSeconds > 0 && isTransferring && (
+                          {isTransferring && (
                             <>
+                              {item.peakSpeedBps ? (
+                                <>
+                                  <span aria-hidden="true">·</span>
+                                  <span className="text-[11px] font-mono tabular-nums text-neutral-400">
+                                    Peak {formatSpeed(item.peakSpeedBps)}
+                                  </span>
+                                </>
+                              ) : null}
                               <span aria-hidden="true">·</span>
-                              <span className="text-[11px] text-neutral-400 font-mono">
-                                ETA ~{item.etaSeconds}s
+                              <span className="text-[11px] text-neutral-400 font-mono tabular-nums">
+                                ETA {formatEta(item.etaSeconds, item.reliableEta ?? true)}
                               </span>
                             </>
                           )}
@@ -417,6 +660,7 @@ export const Transfers: React.FC = () => {
                     <div className="flex items-center justify-between text-[11px] text-neutral-500 font-mono tabular-nums">
                       <span>
                         {item.progress}% {isCompleted ? 'Complete' : isPaused ? 'Paused' : isFailed ? item.status : 'Transferred'}
+                        {isTransferring && remainingBytes > 0 ? ` · ${formatBytes(remainingBytes)} left` : ''}
                       </span>
                       <span>
                         {formatBytes(item.bytesTransferred)} / {formatBytes(item.size)}

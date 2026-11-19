@@ -1,8 +1,9 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Instant;
 use tokio::fs::{File, OpenOptions};
-use tokio::io::AsyncWriteExt;
+use tokio::io::{AsyncWriteExt, BufWriter};
 use tokio::sync::Mutex;
 
 use super::metadata::TransferFileItem;
@@ -13,31 +14,41 @@ use crate::filesystem_security::{
     apply_restrictive_file_permissions, cleanup_part_file, resolve_safe_destination,
     safe_part_file_path, sanitize_untrusted_filename, secure_finalize_part_file,
 };
+use crate::io_optimizer::{
+    check_available_disk_space, checked_next_offset, ChunkBufferPool,
+    BATCHED_FLUSH_INTERVAL_BYTES, WRITE_BUFFER_CAPACITY,
+};
+use crate::throughput_monitor::ThroughputMonitor;
 
 pub struct ActiveFileReceive {
     pub file_id: String,
     pub download_root: PathBuf,
     pub target_path: PathBuf,
     pub part_path: PathBuf,
-    pub writer: File,
+    pub writer: BufWriter<File>,
     pub stream_hasher: StreamHasher,
     pub bytes_written: u64,
+    pub unflushed_bytes: u64,
     pub expected_size: u64,
 }
 
 pub struct FileReceiver {
     pub active_files: Arc<Mutex<HashMap<String, ActiveFileReceive>>>,
+    pub buffer_pool: Arc<ChunkBufferPool>,
+    pub throughput_monitor: Arc<ThroughputMonitor>,
 }
 
 impl FileReceiver {
-    pub fn new() -> Self {
+    pub fn new(buffer_pool: Arc<ChunkBufferPool>, throughput_monitor: Arc<ThroughputMonitor>) -> Self {
         Self {
             active_files: Arc::new(Mutex::new(HashMap::new())),
+            buffer_pool,
+            throughput_monitor,
         }
     }
 
-    /// Initializes a hardened receiving slot strictly contained inside `download_dir`,
-    /// blocking traversal, symlinks, reserved device filenames, and execute bits.
+    /// Initializes a hardened buffered receiving slot strictly contained inside `download_dir`,
+    /// performing preflight disk space verification and enforcing symlink/path containment.
     pub async fn prepare_file_reception(
         &self,
         transfer_id: &str,
@@ -51,6 +62,11 @@ impl FileReceiver {
                 .as_deref()
                 .unwrap_or(&file_item.name);
             return resolve_safe_destination(&download_dir, &file_item.name, Some(rel), true);
+        }
+
+        let space = check_available_disk_space(&download_dir, file_item.size);
+        if !space.sufficient {
+            return Err(space.message);
         }
 
         let prepared = resolve_safe_destination(
@@ -73,7 +89,7 @@ impl FileReceiver {
 
         let part_path = safe_part_file_path(&download_dir, &target_path, transfer_id)?;
 
-        let writer = OpenOptions::new()
+        let raw_file = OpenOptions::new()
             .create(true)
             .write(true)
             .truncate(true)
@@ -82,15 +98,19 @@ impl FileReceiver {
             .map_err(|e| format!("Failed to create part file {}: {}", part_path.display(), e))?;
 
         apply_restrictive_file_permissions(&part_path);
+        self.buffer_pool.increment_file_handles();
+
+        let buffered_writer = BufWriter::with_capacity(WRITE_BUFFER_CAPACITY, raw_file);
 
         let active_receive = ActiveFileReceive {
             file_id: file_item.file_id.clone(),
             download_root: download_dir,
             target_path: target_path.clone(),
             part_path,
-            writer,
+            writer: buffered_writer,
             stream_hasher: StreamHasher::new(),
             bytes_written: 0,
+            unflushed_bytes: 0,
             expected_size: file_item.size,
         };
 
@@ -103,7 +123,7 @@ impl FileReceiver {
     pub async fn write_chunk(
         &self,
         file_id: &str,
-        _offset: u64,
+        offset: u64,
         chunk_data: &[u8],
     ) -> Result<u64, String> {
         let mut lock = self.active_files.lock().await;
@@ -112,20 +132,52 @@ impl FileReceiver {
             None => return Err(format!("No active reception found for file_id {}", file_id)),
         };
 
+        if offset != active.bytes_written {
+            return Err(format!(
+                "Out-of-order chunk offset: expected {}, received {}",
+                active.bytes_written, offset
+            ));
+        }
+
+        let next_total = checked_next_offset(active.bytes_written, chunk_data.len())?;
+        if active.expected_size > 0 && next_total > active.expected_size {
+            return Err(format!(
+                "Incoming chunk exceeds declared file size ({} > {})",
+                next_total, active.expected_size
+            ));
+        }
+
+        let start = Instant::now();
         active
             .writer
             .write_all(chunk_data)
             .await
-            .map_err(|e| format!("Failed to write chunk data: {}", e))?;
+            .map_err(|e| format!("Disk write error on part file: {}", e))?;
 
         active.stream_hasher.update(chunk_data);
-        active.bytes_written += chunk_data.len() as u64;
+        active.bytes_written = next_total;
+        active.unflushed_bytes = active.unflushed_bytes.saturating_add(chunk_data.len() as u64);
+
+        if active.unflushed_bytes >= BATCHED_FLUSH_INTERVAL_BYTES {
+            active
+                .writer
+                .flush()
+                .await
+                .map_err(|e| format!("Batched flush failed: {}", e))?;
+            active.unflushed_bytes = 0;
+        }
+
+        let elapsed_us = start.elapsed().as_micros() as u64;
+        self.throughput_monitor
+            .record_disk_write(chunk_data.len() as u64, elapsed_us);
+        self.throughput_monitor
+            .record_download(chunk_data.len() as u64);
 
         Ok(active.bytes_written)
     }
 
-    /// Verifies SHA-256 checksum, enforces strict path containment, atomically moves `.part` to target,
-    /// and sets restrictive owner-only permissions (`0o600` on Unix).
+    /// Flushes remaining buffered writes, syncs data to disk, verifies SHA-256 checksum,
+    /// enforces strict path containment, atomically moves `.part` to target, and sets `0o600` permissions.
     pub async fn finalize_file_reception(
         &self,
         file_id: &str,
@@ -137,12 +189,17 @@ impl FileReceiver {
                 .ok_or_else(|| format!("Active reception not found for file {}", file_id))?
         };
 
-        active
-            .writer
-            .flush()
-            .await
-            .map_err(|e| format!("Failed to flush part file: {}", e))?;
-        drop(active.writer);
+        if let Err(e) = active.writer.flush().await {
+            drop(active.writer);
+            cleanup_part_file(&active.part_path);
+            self.buffer_pool.decrement_file_handles();
+            return Err(format!("Failed to flush part file before verification: {}", e));
+        }
+
+        let inner_file = active.writer.into_inner();
+        let _ = inner_file.sync_data().await;
+        drop(inner_file);
+        self.buffer_pool.decrement_file_handles();
 
         let receiver_sha256 = active.stream_hasher.finalize_hex();
         if !receiver_sha256.eq_ignore_ascii_case(sender_sha256) {
@@ -162,6 +219,7 @@ impl FileReceiver {
         let mut lock = self.active_files.lock().await;
         if let Some(active) = lock.remove(file_id) {
             drop(active.writer);
+            self.buffer_pool.decrement_file_handles();
             cleanup_part_file(&active.part_path);
         }
     }
